@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from decimal import Decimal
+import math
+from dataclasses import dataclass, fields, is_dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from lifesim.agents.state import AgentState, SerializableState
@@ -15,6 +16,8 @@ class EventCondition(SerializableState):
     value: Any = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.condition_type, str):
+            raise TypeError("Expected event condition type to be a string.")
         if self.condition_type not in {
             "numeric_gte",
             "numeric_lte",
@@ -25,14 +28,22 @@ class EventCondition(SerializableState):
             "week_lte",
         }:
             raise ValueError(f"Unsupported event condition type '{self.condition_type}'.")
+        if self.condition_type.startswith(("numeric", "string", "collection")):
+            _validate_path(self.path)
+        if self.condition_type == "string_equals" and not isinstance(self.value, str):
+            raise TypeError("Expected string_equals condition value to be a string.")
+        if self.condition_type in {"week_gte", "week_lte"}:
+            _integer(self.value, "value")
+        if self.condition_type.startswith("numeric"):
+            _comparable_number(self.value, "value")
         if self.condition_type.startswith(("numeric", "string", "collection")) and not self.path:
             raise ValueError("Expected condition path for agent-state condition.")
 
     def evaluate(self, state: AgentState, context: WeeklyContext) -> bool:
         if self.condition_type == "week_gte":
-            return context.week >= _number(self.value, "value")
+            return context.week >= _integer(self.value, "value")
         if self.condition_type == "week_lte":
-            return context.week <= _number(self.value, "value")
+            return context.week <= _integer(self.value, "value")
 
         actual = _resolve_path(state, self.path)
         if self.condition_type == "numeric_gte":
@@ -56,8 +67,14 @@ class WeightModifier(SerializableState):
     multiplier: float
 
     def __post_init__(self) -> None:
-        if self.multiplier < 0:
-            raise ValueError("Expected weight modifier multiplier to be non-negative.")
+        if not isinstance(self.condition, EventCondition):
+            raise TypeError("Expected weight modifier condition to be EventCondition.")
+        _finite_number(
+            self.multiplier,
+            "multiplier",
+            minimum=0.0,
+            maximum=None,
+        )
 
     def applies(self, state: AgentState, context: WeeklyContext) -> bool:
         return self.condition.evaluate(state, context)
@@ -81,13 +98,14 @@ class EventDefinition(SerializableState):
         _require_non_empty(self.version, "version")
         _require_non_empty(self.category, "category")
         _require_non_empty(self.title, "title")
-        if self.base_weight < 0:
-            raise ValueError("Expected event base_weight to be non-negative.")
-        if self.cooldown_weeks < 0:
-            raise ValueError("Expected cooldown_weeks to be non-negative.")
-        object.__setattr__(self, "conditions", tuple(self.conditions))
-        object.__setattr__(self, "weight_modifiers", tuple(self.weight_modifiers))
-        object.__setattr__(self, "tags", tuple(self.tags))
+        _require_non_empty(self.summary, "summary")
+        _finite_number(self.base_weight, "base_weight", minimum=0.0, maximum=None)
+        _integer(self.cooldown_weeks, "cooldown_weeks", minimum=0)
+        conditions = _typed_tuple(self.conditions, EventCondition, "conditions")
+        modifiers = _typed_tuple(self.weight_modifiers, WeightModifier, "weight_modifiers")
+        object.__setattr__(self, "conditions", conditions)
+        object.__setattr__(self, "weight_modifiers", modifiers)
+        object.__setattr__(self, "tags", _string_sequence(self.tags, "tags"))
 
     def is_conditionally_eligible(self, state: AgentState, context: WeeklyContext) -> bool:
         return all(condition.evaluate(state, context) for condition in self.conditions)
@@ -125,11 +143,13 @@ class EventOccurrence(SerializableState):
 
     def __post_init__(self) -> None:
         _require_non_empty(self.event_id, "event_id")
-        if self.week < 0:
-            raise ValueError("Expected occurrence week to be >= 0.")
-        if self.effective_weight < 0:
-            raise ValueError("Expected occurrence effective_weight to be non-negative.")
-        object.__setattr__(self, "tags", tuple(self.tags))
+        _require_non_empty(self.version, "version")
+        _require_non_empty(self.category, "category")
+        _require_non_empty(self.title, "title")
+        _require_non_empty(self.summary, "summary")
+        _integer(self.week, "week", minimum=0)
+        _finite_number(self.effective_weight, "effective_weight", minimum=0.0, maximum=None)
+        object.__setattr__(self, "tags", _string_sequence(self.tags, "tags"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +181,27 @@ class EventCandidateTrace(SerializableState):
     effective_weight: float
     reason: str
 
+    def __post_init__(self) -> None:
+        _require_non_empty(self.event_id, "event_id")
+        if not isinstance(self.eligible, bool):
+            raise TypeError("Expected candidate trace eligible to be bool.")
+        _finite_number(self.effective_weight, "effective_weight", minimum=0.0, maximum=None)
+        _require_non_empty(self.reason, "reason")
+
+
+@dataclass(frozen=True, slots=True)
+class EventSelectionDraw(SerializableState):
+    slot: int
+    roll: float
+    total_weight: float
+    selected_event_id: str
+
+    def __post_init__(self) -> None:
+        _integer(self.slot, "slot", minimum=0)
+        _finite_number(self.total_weight, "total_weight", minimum=0.0, maximum=None)
+        _finite_number(self.roll, "roll", minimum=0.0, maximum=self.total_weight)
+        _require_non_empty(self.selected_event_id, "selected_event_id")
+
 
 @dataclass(frozen=True, slots=True)
 class EventSelectionTrace(SerializableState):
@@ -169,6 +210,27 @@ class EventSelectionTrace(SerializableState):
     trigger_roll: float
     candidates: tuple[EventCandidateTrace, ...]
     selected_event_ids: tuple[str, ...]
+    selection_draws: tuple[EventSelectionDraw, ...] = ()
+
+    def __post_init__(self) -> None:
+        _integer(self.week, "week", minimum=0)
+        _finite_number(self.trigger_probability, "trigger_probability", minimum=0.0, maximum=1.0)
+        _finite_number(self.trigger_roll, "trigger_roll", minimum=0.0, maximum=1.0)
+        object.__setattr__(
+            self,
+            "candidates",
+            _typed_tuple(self.candidates, EventCandidateTrace, "candidates"),
+        )
+        object.__setattr__(
+            self,
+            "selected_event_ids",
+            _string_sequence(self.selected_event_ids, "selected_event_ids"),
+        )
+        object.__setattr__(
+            self,
+            "selection_draws",
+            _typed_tuple(self.selection_draws, EventSelectionDraw, "selection_draws"),
+        )
 
     @property
     def no_event(self) -> bool:
@@ -194,11 +256,13 @@ class EventCatalog:
     event_probability: float = 0.35
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "definitions", tuple(self.definitions))
-        if self.max_events_per_week < 0:
-            raise ValueError("Expected max_events_per_week to be non-negative.")
-        if not 0 <= self.event_probability <= 1:
-            raise ValueError("Expected event_probability to be between 0 and 1.")
+        object.__setattr__(
+            self,
+            "definitions",
+            _typed_tuple(self.definitions, EventDefinition, "definitions"),
+        )
+        _integer(self.max_events_per_week, "max_events_per_week", minimum=0)
+        _finite_number(self.event_probability, "event_probability", minimum=0.0, maximum=1.0)
         ids = [definition.event_id for definition in self.definitions]
         if len(set(ids)) != len(ids):
             raise ValueError("Expected event_id values to be unique within a catalog.")
@@ -212,26 +276,100 @@ def is_on_cooldown(definition: EventDefinition, history: EventHistory, week: int
 
 
 def _resolve_path(state: AgentState, path: str) -> Any:
+    _validate_path(path)
     current: Any = state
+    traversed: list[str] = []
     for part in path.split("."):
-        if not hasattr(current, part):
+        if not is_dataclass(current):
+            prefix = ".".join(traversed) or "<root>"
+            raise ValueError(
+                f"Invalid event condition path '{path}': '{prefix}' is not a dataclass state object."
+            )
+        declared_fields = {field.name for field in fields(current)}
+        if part not in declared_fields:
             raise ValueError(f"Invalid event condition path '{path}'.")
         current = getattr(current, part)
+        traversed.append(part)
     return current
 
 
 def _comparable_number(value: Any, name: str) -> Decimal:
+    if isinstance(value, bool):
+        raise TypeError(f"Expected '{name}' to resolve to a numeric value.")
     if isinstance(value, Decimal):
-        return value
-    if isinstance(value, int | float | str):
-        return Decimal(str(value))
-    raise TypeError(f"Expected '{name}' to resolve to a numeric value.")
+        decimal_value = value
+    elif isinstance(value, int | float | str):
+        try:
+            decimal_value = Decimal(str(value))
+        except InvalidOperation as exc:
+            raise TypeError(f"Expected '{name}' to resolve to a numeric value.") from exc
+    else:
+        raise TypeError(f"Expected '{name}' to resolve to a numeric value.")
+    if not decimal_value.is_finite():
+        raise ValueError(f"Expected '{name}' to resolve to a finite numeric value.")
+    return decimal_value
 
 
-def _number(value: Any, name: str) -> int:
-    if not isinstance(value, int):
+def _integer(value: Any, name: str, *, minimum: int | None = None) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"Expected '{name}' to be an integer.")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"Expected '{name}' to be >= {minimum}.")
     return value
+
+
+def _finite_number(
+    value: Any,
+    name: str,
+    *,
+    minimum: float | None,
+    maximum: float | None,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float | Decimal):
+        raise TypeError(f"Expected '{name}' to be numeric.")
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError(f"Expected '{name}' to be finite.")
+        numeric = float(value)
+    else:
+        numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ValueError(f"Expected '{name}' to be finite.")
+    if minimum is not None and numeric < minimum:
+        raise ValueError(f"Expected '{name}' to be >= {minimum}.")
+    if maximum is not None and numeric > maximum:
+        raise ValueError(f"Expected '{name}' to be <= {maximum}.")
+    return numeric
+
+
+def _typed_tuple(values: Any, item_type: type[Any], name: str) -> tuple[Any, ...]:
+    if isinstance(values, str) or not isinstance(values, list | tuple):
+        raise TypeError(f"Expected '{name}' to be a list or tuple.")
+    output = tuple(values)
+    for item in output:
+        if not isinstance(item, item_type):
+            raise TypeError(f"Expected '{name}' to contain {item_type.__name__} values.")
+    return output
+
+
+def _string_sequence(values: Any, name: str) -> tuple[str, ...]:
+    if isinstance(values, str) or not isinstance(values, list | tuple):
+        raise TypeError(f"Expected '{name}' to be a list or tuple of strings.")
+    strings = tuple(values)
+    for item in strings:
+        _require_non_empty(item, name)
+    return strings
+
+
+def _validate_path(path: str) -> None:
+    if not isinstance(path, str) or not path:
+        raise ValueError("Expected condition path for agent-state condition.")
+    parts = path.split(".")
+    if any(not part for part in parts):
+        raise ValueError(f"Invalid event condition path '{path}'.")
+    for part in parts:
+        if part.startswith("_") or "__" in part:
+            raise ValueError(f"Unsafe event condition path '{path}'.")
 
 
 def _collection(value: Any, path: str) -> tuple[Any, ...]:

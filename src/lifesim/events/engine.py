@@ -9,6 +9,7 @@ from lifesim.events.model import (
     EventDefinition,
     EventHistory,
     EventOccurrence,
+    EventSelectionDraw,
     EventSelectionResult,
     EventSelectionTrace,
     is_on_cooldown,
@@ -49,9 +50,10 @@ class EventEngine:
 
         trigger_roll = context.rng.random()
         occurrences: tuple[EventOccurrence, ...] = ()
+        selection_draws: tuple[EventSelectionDraw, ...] = ()
 
         if candidates and trigger_roll < self._catalog.event_probability:
-            occurrences = self._select_weighted(candidates, context)
+            occurrences, selection_draws = self._select_weighted(candidates, context)
 
         next_history = history.record(occurrences)
         trace = EventSelectionTrace(
@@ -60,6 +62,7 @@ class EventEngine:
             trigger_roll=trigger_roll,
             candidates=tuple(traces),
             selected_event_ids=tuple(occurrence.event_id for occurrence in occurrences),
+            selection_draws=selection_draws,
         )
         return EventSelectionResult(
             occurrences=occurrences,
@@ -71,11 +74,12 @@ class EventEngine:
         self,
         candidates: list[tuple[EventDefinition, float]],
         context: WeeklyContext,
-    ) -> tuple[EventOccurrence, ...]:
+    ) -> tuple[tuple[EventOccurrence, ...], tuple[EventSelectionDraw, ...]]:
         remaining = list(candidates)
         selected: list[EventOccurrence] = []
+        draws: list[EventSelectionDraw] = []
 
-        for _ in range(min(self._catalog.max_events_per_week, len(remaining))):
+        for slot in range(min(self._catalog.max_events_per_week, len(remaining))):
             total_weight = sum(weight for _, weight in remaining)
             if total_weight <= 0:
                 break
@@ -90,10 +94,18 @@ class EventEngine:
                             effective_weight=weight,
                         )
                     )
+                    draws.append(
+                        EventSelectionDraw(
+                            slot=slot,
+                            roll=roll,
+                            total_weight=total_weight,
+                            selected_event_id=definition.event_id,
+                        )
+                    )
                     remaining.pop(index)
                     break
 
-        return tuple(selected)
+        return tuple(selected), tuple(draws)
 
 
 @dataclass(frozen=True, slots=True)

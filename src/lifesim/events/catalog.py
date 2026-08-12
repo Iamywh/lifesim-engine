@@ -21,6 +21,8 @@ def load_event_catalog(path: str | Path) -> EventCatalog:
 
 def parse_event_catalog(raw: dict[str, Any]) -> EventCatalog:
     settings = raw.get("event_settings", {})
+    if not isinstance(settings, dict):
+        raise TypeError("Expected event catalog 'event_settings' to be a table.")
     events = raw.get("events")
     if not isinstance(events, list):
         raise TypeError("Expected event catalog to contain an 'events' list.")
@@ -45,7 +47,7 @@ def _parse_event(raw: dict[str, Any]) -> EventDefinition:
             _parse_weight_modifier(item) for item in raw.get("weight_modifiers", [])
         ),
         cooldown_weeks=raw.get("cooldown_weeks", 0),
-        tags=tuple(raw.get("tags", [])),
+        tags=raw.get("tags", []),
         title=raw["title"],
         summary=raw["summary"],
     )

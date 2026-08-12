@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import json
+import math
+import os
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -62,6 +68,98 @@ def test_invalid_event_configuration_fails_clearly() -> None:
             load_agent_state(MAYA_SCENARIO),
             context(seed=1),
             EventHistory(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "message"),
+    (
+        ("identity.__class__", "Unsafe event condition path"),
+        ("identity.to_dict", "Invalid event condition path"),
+        ("identity._private", "Unsafe event condition path"),
+        ("identity.nonexistent", "Invalid event condition path"),
+    ),
+)
+def test_event_condition_paths_are_dataclass_fields_only(path: str, message: str) -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+
+    with pytest.raises(ValueError, match=message):
+        EventCondition("string_equals", path=path, value="x").evaluate(maya, context(seed=1))
+
+
+def test_event_condition_validation_fails_at_construction() -> None:
+    with pytest.raises(TypeError, match="string_equals"):
+        EventCondition("string_equals", path="identity.agent_id", value=12)
+
+    with pytest.raises(TypeError, match="integer"):
+        EventCondition("week_gte", value=True)
+
+    with pytest.raises(ValueError, match="finite"):
+        EventCondition("numeric_gte", path="mental.stress", value=math.nan)
+
+    with pytest.raises(TypeError, match="numeric"):
+        EventCondition("numeric_lte", path="mental.stress", value=True)
+
+
+def test_event_definition_and_catalog_validation_fails_at_construction() -> None:
+    with pytest.raises(TypeError, match="base_weight"):
+        event_definition(base_weight=True)
+
+    with pytest.raises(ValueError, match="base_weight"):
+        event_definition(base_weight=math.inf)
+
+    with pytest.raises(ValueError, match="base_weight"):
+        event_definition(base_weight=-1.0)
+
+    with pytest.raises(TypeError, match="multiplier"):
+        WeightModifier(EventCondition("week_gte", value=1), multiplier=True)
+
+    with pytest.raises(ValueError, match="multiplier"):
+        WeightModifier(EventCondition("week_gte", value=1), multiplier=math.inf)
+
+    with pytest.raises(TypeError, match="cooldown_weeks"):
+        event_definition(cooldown_weeks=True)
+
+    with pytest.raises(TypeError, match="tags"):
+        event_definition(tags="not-a-list")
+
+    with pytest.raises(ValueError, match="tags"):
+        event_definition(tags=("valid", ""))
+
+    with pytest.raises(ValueError, match="summary"):
+        event_definition(summary="")
+
+    with pytest.raises(TypeError, match="max_events_per_week"):
+        EventCatalog((), max_events_per_week=True)
+
+    with pytest.raises(TypeError, match="event_probability"):
+        EventCatalog((), event_probability=True)
+
+    with pytest.raises(ValueError, match="event_probability"):
+        EventCatalog((), event_probability=math.nan)
+
+    with pytest.raises(ValueError, match="event_probability"):
+        EventCatalog((), event_probability=1.1)
+
+
+def test_event_catalog_loading_rejects_malformed_tags() -> None:
+    with pytest.raises(TypeError, match="tags"):
+        parse_event_catalog(
+            {
+                "event_settings": {"max_events_per_week": 1, "event_probability": 1.0},
+                "events": [
+                    {
+                        "event_id": "bad_tags",
+                        "version": "1",
+                        "category": "test",
+                        "base_weight": 1.0,
+                        "cooldown_weeks": 0,
+                        "tags": "bare-string",
+                        "title": "Bad tags",
+                        "summary": "This should fail while loading.",
+                    }
+                ],
+            }
         )
 
 
@@ -127,6 +225,33 @@ def test_weighted_deterministic_selection_and_seed_variation() -> None:
 
     assert first.occurrences[0].event_id == repeated.occurrences[0].event_id
     assert first.occurrences[0].event_id != different.occurrences[0].event_id
+    assert first.trace.selection_draws[0].selected_event_id == first.occurrences[0].event_id
+    assert first.trace.selection_draws[0].total_weight == 2.0
+    assert first.trace.to_dict()["selection_draws"] == repeated.trace.to_dict()["selection_draws"]
+
+
+def test_weighted_selection_trace_records_multiple_slots() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    catalog = EventCatalog(
+        (
+            event_definition(event_id="a", base_weight=1.0),
+            event_definition(event_id="b", base_weight=1.0),
+            event_definition(event_id="c", base_weight=1.0),
+        ),
+        event_probability=1.0,
+        max_events_per_week=2,
+    )
+
+    result = EventEngine(catalog).select_events(maya, context(seed=8), EventHistory())
+
+    assert len(result.occurrences) == 2
+    assert len(result.trace.selection_draws) == 2
+    assert [draw.slot for draw in result.trace.selection_draws] == [0, 1]
+    assert [draw.total_weight for draw in result.trace.selection_draws] == [3.0, 2.0]
+    assert [draw.selected_event_id for draw in result.trace.selection_draws] == [
+        occurrence.event_id for occurrence in result.occurrences
+    ]
+    assert result.trace.to_dict()["selection_draws"][1]["selected_event_id"] in {"a", "b", "c"}
 
 
 def test_legitimate_no_event_weeks_have_trace() -> None:
@@ -275,6 +400,59 @@ def test_event_occurrences_serialize_deterministically() -> None:
     assert result.to_dict()["event_history"]["occurrences"][0]["event_id"] == "serial"
 
 
+def test_demo_cli_event_catalog_outputs_machine_readable_traces(tmp_path: Path) -> None:
+    catalog_path = tmp_path / "cli_events.toml"
+    catalog_path.write_text(
+        """
+[event_settings]
+max_events_per_week = 1
+event_probability = 1.0
+
+[[events]]
+event_id = "cli_event"
+version = "1"
+category = "test"
+base_weight = 1.0
+cooldown_weeks = 0
+tags = ["cli", "test"]
+title = "CLI event"
+summary = "A deterministic CLI event."
+
+[[events.conditions]]
+type = "week_gte"
+value = 1
+""".strip(),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "src"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_demo.py",
+            "--config",
+            "configs/default.toml",
+            "--agent-scenario",
+            "configs/scenarios/maya_start.toml",
+            "--event-catalog",
+            str(catalog_path),
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    output = json.loads(completed.stdout)
+
+    first_trace = output["states"][1]["event_traces"][0]
+    assert output["event_history"]["occurrences"][0]["event_id"] == "cli_event"
+    assert first_trace["selected_event_ids"] == ["cli_event"]
+    assert first_trace["selection_draws"][0]["selected_event_id"] == "cli_event"
+    assert first_trace["selection_draws"][0]["total_weight"] == 1.0
+
+
 def test_integration_with_multiple_m2_weeks_records_events_and_traces() -> None:
     result = LifeSimEngine(
         make_config(duration_weeks=3, seed=11),
@@ -298,11 +476,13 @@ def context(*, week: int = 1, seed: int = 1) -> WeeklyContext:
 
 def event_definition(
     *,
-    event_id: str,
-    base_weight: float = 1.0,
+    event_id: str = "test_event",
+    base_weight: Any = 1.0,
     conditions: tuple[EventCondition, ...] = (),
     modifiers: tuple[WeightModifier, ...] = (),
-    cooldown_weeks: int = 0,
+    cooldown_weeks: Any = 0,
+    tags: Any = ("test",),
+    summary: str = "A deterministic test event.",
 ) -> EventDefinition:
     return EventDefinition(
         event_id=event_id,
@@ -312,7 +492,7 @@ def event_definition(
         conditions=conditions,
         weight_modifiers=modifiers,
         cooldown_weeks=cooldown_weeks,
-        tags=("test",),
+        tags=tags,
         title="Test event",
-        summary="A deterministic test event.",
+        summary=summary,
     )
