@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from lifesim.agents.scenario import load_agent_state, parse_agent_state
 from lifesim.agents.state import (
+    AcuteCondition,
     AgentState,
     Debt,
+    EducationState,
     EmploymentState,
     FinancialState,
     GoalItem,
@@ -39,8 +42,8 @@ def test_maya_scenario_loading_builds_composed_agent_state() -> None:
     assert maya.identity.display_name == "Maya"
     assert maya.identity.age_years == 21
     assert maya.identity.current_city == "Veyra"
-    assert maya.financial.currency == "EUR"
-    assert maya.financial.cash + maya.financial.bank_balance < 2_000
+    assert maya.education.status == "enrolled"
+    assert maya.education.program == "Urban Studies BA"
     assert maya.employment.status == "seeking_entry_level_work"
     assert all(0.0 <= skill.level <= 100.0 for skill in maya.skills.items)
 
@@ -54,6 +57,7 @@ def test_composed_agent_state_keeps_sections_distinct_and_immutable() -> None:
     assert isinstance(maya.mental, MentalState)
     assert isinstance(maya.needs, NeedsState)
     assert isinstance(maya.personality, PersonalityState)
+    assert isinstance(maya.education, EducationState)
     assert isinstance(maya.goals, GoalsState)
     assert isinstance(maya.skills, SkillsState)
     assert isinstance(maya.employment, EmploymentState)
@@ -64,6 +68,21 @@ def test_composed_agent_state_keeps_sections_distinct_and_immutable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         maya.identity.age_years = 22
+
+
+def test_decimal_monetary_values_serialize_to_exact_checkpoint_strings() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    financial = maya.financial
+    serialized = maya.to_dict()["financial"]
+
+    assert financial.cash == Decimal("180.00")
+    assert financial.bank_balance == Decimal("980.00")
+    assert financial.cash + financial.bank_balance == Decimal("1160.00")
+    assert serialized["cash"] == "180.00"
+    assert serialized["bank_balance"] == "980.00"
+    assert serialized["debts"][0]["balance"] == "450.00"
+    assert serialized["income_streams"][0]["amount"] == "180.00"
+    assert serialized["recurring_commitments"][0]["amount"] == "520.00"
 
 
 def test_agent_state_serializes_to_checkpoint_ready_dictionary() -> None:
@@ -81,6 +100,14 @@ def test_agent_state_serializes_to_checkpoint_ready_dictionary() -> None:
         "income_streams",
         "recurring_commitments",
     }
+    assert serialized["education"] == {
+        "status": "enrolled",
+        "program": "Urban Studies BA",
+        "current_year": 2,
+        "total_years": 3,
+        "progress": 45.0,
+        "weekly_study_hours": 18.0,
+    }
     assert serialized["goals"]["short_term"][0]["priority"] == 5
     assert serialized["memory"] == {
         "episodic_memories": [],
@@ -91,24 +118,41 @@ def test_agent_state_serializes_to_checkpoint_ready_dictionary() -> None:
 
 
 def test_validation_rejects_impossible_values() -> None:
-    with pytest.raises(ValueError, match="openness"):
+    with pytest.raises(ValueError, match="risk_tolerance"):
         PersonalityState(
-            openness=1.2,
+            risk_tolerance=1.2,
+            impulsivity=0.5,
+            discipline=0.5,
+            frugality=0.5,
+            social_need=0.5,
+            independence=0.5,
+            resilience=0.5,
+            curiosity=0.5,
+            confidence=0.5,
+            patience=0.5,
             conscientiousness=0.5,
-            extraversion=0.5,
-            agreeableness=0.5,
-            neuroticism=0.5,
-            risk_tolerance=0.5,
             adaptability=0.5,
+        )
+
+    with pytest.raises(TypeError, match="Decimal"):
+        FinancialState(
+            currency="EUR",
+            cash=1.0,
+            bank_balance=Decimal("0.00"),
+            savings=Decimal("0.00"),
+            emergency_fund=Decimal("0.00"),
+            debts=(),
+            income_streams=(),
+            recurring_commitments=(),
         )
 
     with pytest.raises(ValueError, match="cash"):
         FinancialState(
             currency="EUR",
-            cash=-1.0,
-            bank_balance=0.0,
-            savings=0.0,
-            emergency_fund=0.0,
+            cash=Decimal("-1.00"),
+            bank_balance=Decimal("0.00"),
+            savings=Decimal("0.00"),
+            emergency_fund=Decimal("0.00"),
             debts=(),
             income_streams=(),
             recurring_commitments=(),
@@ -119,6 +163,51 @@ def test_validation_rejects_impossible_values() -> None:
 
     with pytest.raises(ValueError, match="age_years"):
         _generic_agent(identity=_identity(display_name="Alex", age_years=-1))
+
+
+def test_education_state_validation() -> None:
+    education = EducationState(
+        status="enrolled",
+        program="Computer Science",
+        current_year=1,
+        total_years=4,
+        progress=12.5,
+        weekly_study_hours=20.0,
+    )
+
+    assert education.to_dict()["status"] == "enrolled"
+
+    with pytest.raises(ValueError, match="current_year"):
+        EducationState(
+            status="enrolled",
+            program="Computer Science",
+            current_year=5,
+            total_years=4,
+            progress=12.5,
+            weekly_study_hours=20.0,
+        )
+
+
+def test_health_supports_sleep_debt_and_acute_conditions() -> None:
+    health = HealthState(
+        physical_health=75.0,
+        energy=60.0,
+        sleep_debt=8.5,
+        mobility=90.0,
+        acute_conditions=(AcuteCondition(name="mild cold", severity=20.0),),
+    )
+
+    assert health.to_dict()["sleep_debt"] == 8.5
+    assert health.to_dict()["acute_conditions"] == [{"name": "mild cold", "severity": 20.0}]
+
+    with pytest.raises(ValueError, match="sleep_debt"):
+        HealthState(
+            physical_health=75.0,
+            energy=60.0,
+            sleep_debt=-1.0,
+            mobility=90.0,
+            acute_conditions=(),
+        )
 
 
 def test_deterministic_initialization_preserves_m0_rng_foundation() -> None:
@@ -137,6 +226,7 @@ def test_generic_agent_reuse_is_independent_of_maya_scenario() -> None:
     assert agent.identity.agent_id == "alex"
     assert agent.identity.display_name != "Maya"
     assert agent.to_dict()["identity"]["current_city"] == "Veyra"
+    assert agent.to_dict()["education"]["program"] == "Computer Science"
     assert agent.to_dict()["skills"]["items"][0]["name"] == "customer service"
 
 
@@ -151,6 +241,7 @@ def test_parse_agent_state_accepts_non_maya_scenario_data() -> None:
 
     assert agent.identity.agent_id == "sam"
     assert agent.identity.age_years == 29
+    assert agent.financial.cash == Decimal("100.00")
 
 
 def _generic_agent(*, identity: IdentityState) -> AgentState:
@@ -158,26 +249,34 @@ def _generic_agent(*, identity: IdentityState) -> AgentState:
         identity=identity,
         financial=FinancialState(
             currency="EUR",
-            cash=100.0,
-            bank_balance=600.0,
-            savings=50.0,
-            emergency_fund=0.0,
-            debts=(Debt("small loan", balance=100.0, minimum_payment=10.0, interest_rate=0.1),),
+            cash=Decimal("100.00"),
+            bank_balance=Decimal("600.00"),
+            savings=Decimal("50.00"),
+            emergency_fund=Decimal("0.00"),
+            debts=(
+                Debt(
+                    "small loan",
+                    balance=Decimal("100.00"),
+                    minimum_payment=Decimal("10.00"),
+                    interest_rate=0.1,
+                ),
+            ),
             income_streams=(),
             recurring_commitments=(),
         ),
         health=HealthState(
             physical_health=75.0,
             energy=65.0,
-            sleep_quality=70.0,
+            sleep_debt=2.0,
             mobility=90.0,
+            acute_conditions=(),
         ),
         mental=MentalState(
             mood=60.0,
             stress=35.0,
-            confidence=55.0,
+            mental_load=45.0,
+            recovery_need=30.0,
             loneliness=30.0,
-            resilience=60.0,
         ),
         needs=NeedsState(
             housing_security=50.0,
@@ -188,13 +287,26 @@ def _generic_agent(*, identity: IdentityState) -> AgentState:
             purpose=50.0,
         ),
         personality=PersonalityState(
-            openness=0.6,
-            conscientiousness=0.5,
-            extraversion=0.4,
-            agreeableness=0.7,
-            neuroticism=0.3,
             risk_tolerance=0.4,
+            impulsivity=0.3,
+            discipline=0.5,
+            frugality=0.6,
+            social_need=0.5,
+            independence=0.6,
+            resilience=0.6,
+            curiosity=0.7,
+            confidence=0.5,
+            patience=0.5,
+            conscientiousness=0.5,
             adaptability=0.6,
+        ),
+        education=EducationState(
+            status="enrolled",
+            program="Computer Science",
+            current_year=1,
+            total_years=4,
+            progress=15.0,
+            weekly_study_hours=16.0,
         ),
         goals=GoalsState(
             short_term=(GoalItem("Find work", priority=5),),

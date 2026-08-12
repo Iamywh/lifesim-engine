@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from decimal import Decimal
 from typing import Any, Literal
 
 type GoalHorizon = Literal["short", "medium", "long"]
@@ -32,27 +33,27 @@ class IdentityState(SerializableState):
 @dataclass(frozen=True, slots=True)
 class Debt(SerializableState):
     name: str
-    balance: float
-    minimum_payment: float
+    balance: Decimal
+    minimum_payment: Decimal
     interest_rate: float
 
     def __post_init__(self) -> None:
         _require_non_empty(self.name, "name")
-        _require_non_negative(self.balance, "balance")
-        _require_non_negative(self.minimum_payment, "minimum_payment")
+        _require_money(self.balance, "balance")
+        _require_money(self.minimum_payment, "minimum_payment")
         _require_bounded(self.interest_rate, "interest_rate", minimum=0.0, maximum=1.0)
 
 
 @dataclass(frozen=True, slots=True)
 class IncomeStream(SerializableState):
     name: str
-    amount: float
+    amount: Decimal
     cadence: str
     reliability: float
 
     def __post_init__(self) -> None:
         _require_non_empty(self.name, "name")
-        _require_non_negative(self.amount, "amount")
+        _require_money(self.amount, "amount")
         _require_non_empty(self.cadence, "cadence")
         _require_bounded(self.reliability, "reliability", minimum=0.0, maximum=1.0)
 
@@ -60,13 +61,13 @@ class IncomeStream(SerializableState):
 @dataclass(frozen=True, slots=True)
 class RecurringCommitment(SerializableState):
     name: str
-    amount: float
+    amount: Decimal
     cadence: str
     category: str
 
     def __post_init__(self) -> None:
         _require_non_empty(self.name, "name")
-        _require_non_negative(self.amount, "amount")
+        _require_money(self.amount, "amount")
         _require_non_empty(self.cadence, "cadence")
         _require_non_empty(self.category, "category")
 
@@ -74,10 +75,10 @@ class RecurringCommitment(SerializableState):
 @dataclass(frozen=True, slots=True)
 class FinancialState(SerializableState):
     currency: str
-    cash: float
-    bank_balance: float
-    savings: float
-    emergency_fund: float
+    cash: Decimal
+    bank_balance: Decimal
+    savings: Decimal
+    emergency_fund: Decimal
     debts: tuple[Debt, ...]
     income_streams: tuple[IncomeStream, ...]
     recurring_commitments: tuple[RecurringCommitment, ...]
@@ -86,43 +87,55 @@ class FinancialState(SerializableState):
         _require_non_empty(self.currency, "currency")
         if len(self.currency) != 3:
             raise ValueError("Expected 'currency' to use an ISO-style three-letter code.")
-        _require_non_negative(self.cash, "cash")
-        _require_non_negative(self.bank_balance, "bank_balance")
-        _require_non_negative(self.savings, "savings")
-        _require_non_negative(self.emergency_fund, "emergency_fund")
+        _require_money(self.cash, "cash")
+        _require_money(self.bank_balance, "bank_balance")
+        _require_money(self.savings, "savings")
+        _require_money(self.emergency_fund, "emergency_fund")
         _freeze_tuple(self, "debts")
         _freeze_tuple(self, "income_streams")
         _freeze_tuple(self, "recurring_commitments")
 
 
 @dataclass(frozen=True, slots=True)
+class AcuteCondition(SerializableState):
+    name: str
+    severity: float
+
+    def __post_init__(self) -> None:
+        _require_non_empty(self.name, "name")
+        _require_percent(self.severity, "severity")
+
+
+@dataclass(frozen=True, slots=True)
 class HealthState(SerializableState):
     physical_health: float
     energy: float
-    sleep_quality: float
+    sleep_debt: float
     mobility: float
+    acute_conditions: tuple[AcuteCondition, ...]
 
     def __post_init__(self) -> None:
         _require_percent(self.physical_health, "physical_health")
         _require_percent(self.energy, "energy")
-        _require_percent(self.sleep_quality, "sleep_quality")
+        _require_non_negative(self.sleep_debt, "sleep_debt")
         _require_percent(self.mobility, "mobility")
+        _freeze_tuple(self, "acute_conditions")
 
 
 @dataclass(frozen=True, slots=True)
 class MentalState(SerializableState):
     mood: float
     stress: float
-    confidence: float
+    mental_load: float
+    recovery_need: float
     loneliness: float
-    resilience: float
 
     def __post_init__(self) -> None:
         _require_percent(self.mood, "mood")
         _require_percent(self.stress, "stress")
-        _require_percent(self.confidence, "confidence")
+        _require_percent(self.mental_load, "mental_load")
+        _require_percent(self.recovery_need, "recovery_need")
         _require_percent(self.loneliness, "loneliness")
-        _require_percent(self.resilience, "resilience")
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,22 +158,56 @@ class NeedsState(SerializableState):
 
 @dataclass(frozen=True, slots=True)
 class PersonalityState(SerializableState):
-    openness: float
-    conscientiousness: float
-    extraversion: float
-    agreeableness: float
-    neuroticism: float
     risk_tolerance: float
+    impulsivity: float
+    discipline: float
+    frugality: float
+    social_need: float
+    independence: float
+    resilience: float
+    curiosity: float
+    confidence: float
+    patience: float
+    conscientiousness: float
     adaptability: float
 
     def __post_init__(self) -> None:
-        _require_trait(self.openness, "openness")
-        _require_trait(self.conscientiousness, "conscientiousness")
-        _require_trait(self.extraversion, "extraversion")
-        _require_trait(self.agreeableness, "agreeableness")
-        _require_trait(self.neuroticism, "neuroticism")
         _require_trait(self.risk_tolerance, "risk_tolerance")
+        _require_trait(self.impulsivity, "impulsivity")
+        _require_trait(self.discipline, "discipline")
+        _require_trait(self.frugality, "frugality")
+        _require_trait(self.social_need, "social_need")
+        _require_trait(self.independence, "independence")
+        _require_trait(self.resilience, "resilience")
+        _require_trait(self.curiosity, "curiosity")
+        _require_trait(self.confidence, "confidence")
+        _require_trait(self.patience, "patience")
+        _require_trait(self.conscientiousness, "conscientiousness")
         _require_trait(self.adaptability, "adaptability")
+
+
+@dataclass(frozen=True, slots=True)
+class EducationState(SerializableState):
+    status: str
+    program: str
+    current_year: int
+    total_years: int
+    progress: float
+    weekly_study_hours: float
+
+    def __post_init__(self) -> None:
+        _require_non_empty(self.status, "status")
+        _require_non_negative(self.current_year, "current_year")
+        _require_non_negative(self.total_years, "total_years")
+        if self.total_years > 0 and self.current_year > self.total_years:
+            raise ValueError("Expected 'current_year' to be <= 'total_years'.")
+        _require_percent(self.progress, "progress")
+        _require_bounded(
+            self.weekly_study_hours,
+            "weekly_study_hours",
+            minimum=0.0,
+            maximum=168.0,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,6 +409,7 @@ class AgentState(SerializableState):
     mental: MentalState
     needs: NeedsState
     personality: PersonalityState
+    education: EducationState
     goals: GoalsState
     skills: SkillsState
     employment: EmploymentState
@@ -377,6 +425,8 @@ PersonState = AgentState
 def _serialize(value: Any) -> Any:
     if isinstance(value, SerializableState):
         return value.to_dict()
+    if isinstance(value, Decimal):
+        return str(value)
     if isinstance(value, tuple):
         return [_serialize(item) for item in value]
     return value
@@ -398,6 +448,15 @@ def _require_non_negative(value: float, name: str) -> None:
         raise TypeError(f"Expected '{name}' to be numeric.")
     if value < 0:
         raise ValueError(f"Expected '{name}' to be non-negative.")
+
+
+def _require_money(value: Decimal, name: str) -> None:
+    if not isinstance(value, Decimal):
+        raise TypeError(f"Expected monetary value '{name}' to be Decimal.")
+    if not value.is_finite():
+        raise ValueError(f"Expected monetary value '{name}' to be finite.")
+    if value < Decimal(0):
+        raise ValueError(f"Expected monetary value '{name}' to be non-negative.")
 
 
 def _require_percent(value: float, name: str) -> None:

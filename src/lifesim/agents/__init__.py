@@ -1,8 +1,10 @@
 """Composable agent state models."""
 
 from lifesim.agents.state import (
+    AcuteCondition,
     AgentState,
     Debt,
+    EducationState,
     EmploymentState,
     EpisodicMemory,
     FinancialState,
@@ -32,8 +34,10 @@ from lifesim.agents.state import (
 )
 
 __all__ = [
+    "AcuteCondition",
     "AgentState",
     "Debt",
+    "EducationState",
     "EmploymentState",
     "EpisodicMemory",
     "FinancialState",

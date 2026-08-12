@@ -31,6 +31,8 @@ python scripts/run_demo.py --config configs/default.toml --agent-scenario config
 
 Maya-specific values live in `configs/scenarios/maya_start.toml`; the core engine and agent model remain reusable for future characters.
 
+M1 stores monetary scenario values as quoted decimal strings in TOML, parses them to `Decimal`, and serializes them back to exact strings for future checkpoints and JSON logs. Maya is also represented with state-only education, health, mental, personality, finance, memory, and skill components; no education, employment, decision, event, or personality evolution logic runs yet.
+
 ## Test
 
 ```powershell

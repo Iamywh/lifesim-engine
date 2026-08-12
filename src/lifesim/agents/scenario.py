@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import tomllib
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 from lifesim.agents.state import (
+    AcuteCondition,
     AgentState,
     Debt,
+    EducationState,
     EmploymentState,
     EpisodicMemory,
     FinancialState,
@@ -48,10 +51,11 @@ def parse_agent_state(raw: dict[str, Any]) -> AgentState:
     return AgentState(
         identity=_parse_identity(_require_section(agent, "identity")),
         financial=_parse_financial(_require_section(agent, "financial")),
-        health=HealthState(**_require_section(agent, "health")),
+        health=_parse_health(_require_section(agent, "health")),
         mental=MentalState(**_require_section(agent, "mental")),
         needs=NeedsState(**_require_section(agent, "needs")),
         personality=PersonalityState(**_require_section(agent, "personality")),
+        education=EducationState(**_require_section(agent, "education")),
         goals=_parse_goals(_require_section(agent, "goals")),
         skills=_parse_skills(_require_section(agent, "skills")),
         employment=EmploymentState(**_require_section(agent, "employment")),
@@ -69,13 +73,47 @@ def _parse_identity(raw: dict[str, Any]) -> IdentityState:
 def _parse_financial(raw: dict[str, Any]) -> FinancialState:
     return FinancialState(
         currency=raw["currency"],
-        cash=raw["cash"],
-        bank_balance=raw["bank_balance"],
-        savings=raw["savings"],
-        emergency_fund=raw["emergency_fund"],
-        debts=_items(raw, "debts", Debt),
-        income_streams=_items(raw, "income_streams", IncomeStream),
-        recurring_commitments=_items(raw, "recurring_commitments", RecurringCommitment),
+        cash=_money(raw["cash"], "cash"),
+        bank_balance=_money(raw["bank_balance"], "bank_balance"),
+        savings=_money(raw["savings"], "savings"),
+        emergency_fund=_money(raw["emergency_fund"], "emergency_fund"),
+        debts=tuple(
+            Debt(
+                name=item["name"],
+                balance=_money(item["balance"], "balance"),
+                minimum_payment=_money(item["minimum_payment"], "minimum_payment"),
+                interest_rate=item["interest_rate"],
+            )
+            for item in _raw_items(raw, "debts")
+        ),
+        income_streams=tuple(
+            IncomeStream(
+                name=item["name"],
+                amount=_money(item["amount"], "amount"),
+                cadence=item["cadence"],
+                reliability=item["reliability"],
+            )
+            for item in _raw_items(raw, "income_streams")
+        ),
+        recurring_commitments=tuple(
+            RecurringCommitment(
+                name=item["name"],
+                amount=_money(item["amount"], "amount"),
+                cadence=item["cadence"],
+                category=item["category"],
+            )
+            for item in _raw_items(raw, "recurring_commitments")
+        ),
+    )
+
+
+def _parse_health(raw: dict[str, Any]) -> HealthState:
+    return HealthState(
+        physical_health=raw["physical_health"],
+        energy=raw["energy"],
+        sleep_debt=raw["sleep_debt"],
+        mobility=raw["mobility"],
+        acute_conditions=_items(raw, "acute_conditions", AcuteCondition),
     )
 
 
@@ -130,7 +168,22 @@ def _require_section(raw: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def _items(raw: dict[str, Any], key: str, item_type: type) -> tuple[Any, ...]:
+    return tuple(item_type(**item) for item in _raw_items(raw, key))
+
+
+def _raw_items(raw: dict[str, Any], key: str) -> list[dict[str, Any]]:
     values = raw.get(key, [])
     if not isinstance(values, list):
         raise TypeError(f"Expected '{key}' to be a list.")
-    return tuple(item_type(**item) for item in values)
+    if not all(isinstance(item, dict) for item in values):
+        raise TypeError(f"Expected '{key}' to contain tables.")
+    return values
+
+
+def _money(value: Any, name: str) -> Decimal:
+    if not isinstance(value, str):
+        raise TypeError(f"Expected monetary value '{name}' to be a string.")
+    try:
+        return Decimal(value)
+    except InvalidOperation as error:
+        raise ValueError(f"Expected monetary value '{name}' to be a decimal string.") from error
