@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -207,6 +208,38 @@ def test_weight_modifiers_change_effective_weight() -> None:
 
     assert result.trace.candidates[0].effective_weight == 3.0
     assert result.occurrences[0].effective_weight == 3.0
+
+
+def test_decimal_event_weights_are_normalized_to_float_domain() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    modifier = WeightModifier(
+        condition=EventCondition("week_gte", value=1),
+        multiplier=Decimal("1.5"),
+    )
+    event = event_definition(
+        event_id="decimal_weights",
+        base_weight=Decimal("2.0"),
+        modifiers=(modifier,),
+    )
+    catalog = EventCatalog((event,), event_probability=Decimal("1.0"))
+
+    result = EventEngine(catalog).select_events(maya, context(seed=1), EventHistory())
+
+    assert event.base_weight == 2.0
+    assert modifier.multiplier == 1.5
+    assert catalog.event_probability == 1.0
+    assert isinstance(event.base_weight, float)
+    assert isinstance(modifier.multiplier, float)
+    assert isinstance(catalog.event_probability, float)
+    assert result.occurrences[0].effective_weight == 3.0
+    assert result.trace.candidates[0].effective_weight == 3.0
+    assert result.trace.selection_draws[0].total_weight == 3.0
+    assert isinstance(result.occurrences[0].effective_weight, float)
+    assert isinstance(result.trace.candidates[0].effective_weight, float)
+    assert isinstance(result.trace.selection_draws[0].roll, float)
+    assert isinstance(result.trace.selection_draws[0].total_weight, float)
+    assert isinstance(result.trace.trigger_probability, float)
+    assert isinstance(result.trace.trigger_roll, float)
 
 
 def test_weighted_deterministic_selection_and_seed_variation() -> None:

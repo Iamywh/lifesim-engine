@@ -69,11 +69,15 @@ class WeightModifier(SerializableState):
     def __post_init__(self) -> None:
         if not isinstance(self.condition, EventCondition):
             raise TypeError("Expected weight modifier condition to be EventCondition.")
-        _finite_number(
-            self.multiplier,
+        object.__setattr__(
+            self,
             "multiplier",
-            minimum=0.0,
-            maximum=None,
+            _finite_number(
+                self.multiplier,
+                "multiplier",
+                minimum=0.0,
+                maximum=None,
+            ),
         )
 
     def applies(self, state: AgentState, context: WeeklyContext) -> bool:
@@ -99,7 +103,11 @@ class EventDefinition(SerializableState):
         _require_non_empty(self.category, "category")
         _require_non_empty(self.title, "title")
         _require_non_empty(self.summary, "summary")
-        _finite_number(self.base_weight, "base_weight", minimum=0.0, maximum=None)
+        object.__setattr__(
+            self,
+            "base_weight",
+            _finite_number(self.base_weight, "base_weight", minimum=0.0, maximum=None),
+        )
         _integer(self.cooldown_weeks, "cooldown_weeks", minimum=0)
         conditions = _typed_tuple(self.conditions, EventCondition, "conditions")
         modifiers = _typed_tuple(self.weight_modifiers, WeightModifier, "weight_modifiers")
@@ -148,7 +156,16 @@ class EventOccurrence(SerializableState):
         _require_non_empty(self.title, "title")
         _require_non_empty(self.summary, "summary")
         _integer(self.week, "week", minimum=0)
-        _finite_number(self.effective_weight, "effective_weight", minimum=0.0, maximum=None)
+        object.__setattr__(
+            self,
+            "effective_weight",
+            _finite_number(
+                self.effective_weight,
+                "effective_weight",
+                minimum=0.0,
+                maximum=None,
+            ),
+        )
         object.__setattr__(self, "tags", _string_sequence(self.tags, "tags"))
 
 
@@ -185,7 +202,16 @@ class EventCandidateTrace(SerializableState):
         _require_non_empty(self.event_id, "event_id")
         if not isinstance(self.eligible, bool):
             raise TypeError("Expected candidate trace eligible to be bool.")
-        _finite_number(self.effective_weight, "effective_weight", minimum=0.0, maximum=None)
+        object.__setattr__(
+            self,
+            "effective_weight",
+            _finite_number(
+                self.effective_weight,
+                "effective_weight",
+                minimum=0.0,
+                maximum=None,
+            ),
+        )
         _require_non_empty(self.reason, "reason")
 
 
@@ -198,8 +224,18 @@ class EventSelectionDraw(SerializableState):
 
     def __post_init__(self) -> None:
         _integer(self.slot, "slot", minimum=0)
-        _finite_number(self.total_weight, "total_weight", minimum=0.0, maximum=None)
-        _finite_number(self.roll, "roll", minimum=0.0, maximum=self.total_weight)
+        total_weight = _finite_number(
+            self.total_weight,
+            "total_weight",
+            minimum=0.0,
+            maximum=None,
+        )
+        object.__setattr__(self, "total_weight", total_weight)
+        object.__setattr__(
+            self,
+            "roll",
+            _finite_number(self.roll, "roll", minimum=0.0, maximum=total_weight),
+        )
         _require_non_empty(self.selected_event_id, "selected_event_id")
 
 
@@ -214,8 +250,21 @@ class EventSelectionTrace(SerializableState):
 
     def __post_init__(self) -> None:
         _integer(self.week, "week", minimum=0)
-        _finite_number(self.trigger_probability, "trigger_probability", minimum=0.0, maximum=1.0)
-        _finite_number(self.trigger_roll, "trigger_roll", minimum=0.0, maximum=1.0)
+        object.__setattr__(
+            self,
+            "trigger_probability",
+            _finite_number(
+                self.trigger_probability,
+                "trigger_probability",
+                minimum=0.0,
+                maximum=1.0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "trigger_roll",
+            _finite_number(self.trigger_roll, "trigger_roll", minimum=0.0, maximum=1.0),
+        )
         object.__setattr__(
             self,
             "candidates",
@@ -262,7 +311,16 @@ class EventCatalog:
             _typed_tuple(self.definitions, EventDefinition, "definitions"),
         )
         _integer(self.max_events_per_week, "max_events_per_week", minimum=0)
-        _finite_number(self.event_probability, "event_probability", minimum=0.0, maximum=1.0)
+        object.__setattr__(
+            self,
+            "event_probability",
+            _finite_number(
+                self.event_probability,
+                "event_probability",
+                minimum=0.0,
+                maximum=1.0,
+            ),
+        )
         ids = [definition.event_id for definition in self.definitions]
         if len(set(ids)) != len(ids):
             raise ValueError("Expected event_id values to be unique within a catalog.")
