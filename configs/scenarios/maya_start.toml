@@ -1,0 +1,200 @@
+[agent.identity]
+agent_id = "maya"
+display_name = "Maya"
+age_years = 21
+pronouns = "she/her"
+life_stage = "young_adult"
+origin_city = "Porto"
+current_city = "Veyra"
+background = "A young adult arriving in the fictional European city of Veyra with a small savings buffer, practical optimism, and no established local network."
+
+[agent.financial]
+currency = "EUR"
+cash = "180.00"
+bank_balance = "980.00"
+savings = "250.00"
+emergency_fund = "0.00"
+
+[[agent.financial.debts]]
+name = "student overdraft"
+balance = "450.00"
+minimum_payment = "25.00"
+interest_rate = "0.00"
+
+[[agent.financial.income_streams]]
+name = "occasional remote admin shifts"
+amount = "180.00"
+cadence = "monthly"
+reliability = 0.35
+
+[[agent.financial.recurring_commitments]]
+name = "shared room rent"
+amount = "520.00"
+cadence = "monthly"
+category = "housing"
+
+[[agent.financial.recurring_commitments]]
+name = "public transport pass"
+amount = "49.00"
+cadence = "monthly"
+category = "transport"
+
+[[agent.financial.recurring_commitments]]
+name = "phone plan"
+amount = "18.00"
+cadence = "monthly"
+category = "utilities"
+
+[agent.health]
+physical_health = 78.0
+energy = 64.0
+sleep_debt = 6.0
+mobility = 95.0
+acute_conditions = []
+
+[agent.mental]
+mood = 62.0
+stress = 57.0
+mental_load = 61.0
+recovery_need = 46.0
+loneliness = 48.0
+
+[agent.needs]
+housing_security = 45.0
+food_security = 70.0
+safety = 76.0
+belonging = 25.0
+autonomy = 68.0
+purpose = 52.0
+
+[agent.personality]
+risk_tolerance = 0.39
+impulsivity = 0.34
+discipline = 0.55
+frugality = 0.63
+social_need = 0.58
+independence = 0.66
+resilience = 0.66
+curiosity = 0.72
+confidence = 0.54
+patience = 0.49
+conscientiousness = 0.58
+adaptability = 0.71
+
+[agent.education]
+status = "enrolled"
+program = "Urban Studies BA"
+current_year = 2
+total_years = 3
+progress = 45.0
+weekly_study_hours = 18.0
+
+[[agent.goals.short_term]]
+description = "Find stable entry-level work within the first month."
+priority = 5
+
+[[agent.goals.short_term]]
+description = "Learn the fastest low-cost routes around Veyra."
+priority = 3
+
+[[agent.goals.medium_term]]
+description = "Build three reliable local connections."
+priority = 4
+
+[[agent.goals.medium_term]]
+description = "Create a one-month emergency buffer."
+priority = 4
+
+[[agent.goals.long_term]]
+description = "Move into a stable independent living situation."
+priority = 4
+
+[[agent.goals.long_term]]
+description = "Develop skills for a better-paid administrative or service role."
+priority = 3
+
+[[agent.skills.items]]
+name = "customer service"
+category = "work"
+level = 42.0
+experience = 120.0
+
+[[agent.skills.items]]
+name = "basic budgeting"
+category = "life"
+level = 38.0
+experience = 80.0
+
+[[agent.skills.items]]
+name = "spreadsheets"
+category = "technical"
+level = 31.0
+experience = 45.0
+
+[[agent.skills.items]]
+name = "local language"
+category = "communication"
+level = 36.0
+experience = 70.0
+
+[agent.employment]
+status = "seeking_entry_level_work"
+role_title = ""
+employer = ""
+weekly_hours = 0.0
+job_search_intensity = 72.0
+
+[agent.social]
+support_network_strength = 22.0
+city_familiarity = 18.0
+
+[[agent.social.connections]]
+name = "Lina"
+relationship = "flatmate"
+closeness = 28.0
+
+[[agent.social.connections]]
+name = "Tomas"
+relationship = "friend_from_home"
+closeness = 63.0
+
+[agent.habits]
+routine_stability = 34.0
+
+[[agent.habits.items]]
+name = "morning planning"
+cadence = "most weekdays"
+strength = 35.0
+
+[[agent.habits.items]]
+name = "evening expense notes"
+cadence = "several times per week"
+strength = 29.0
+
+[agent.knowledge]
+
+[[agent.knowledge.topics]]
+name = "Veyra neighborhoods"
+familiarity = 18.0
+
+[[agent.knowledge.topics]]
+name = "local job boards"
+familiarity = 26.0
+
+[[agent.knowledge.languages]]
+language = "Portuguese"
+proficiency = 96.0
+
+[[agent.knowledge.languages]]
+language = "English"
+proficiency = 68.0
+
+[[agent.knowledge.languages]]
+language = "Veyran"
+proficiency = 34.0
+
+[agent.memory]
+episodic_memories = []
+lessons_learned = []
+mistakes = []
+successful_patterns = []

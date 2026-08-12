@@ -1,6 +1,6 @@
 # LifeSim Engine
 
-LifeSim Engine is a deterministic simulation core for life-simulation experiments. M0 establishes the Python package skeleton, configuration loading, reproducible random number generation, and a minimal week-based engine loop that future milestones can expand.
+LifeSim Engine is a deterministic simulation core for life-simulation experiments. M0 established the Python package skeleton, configuration loading, reproducible random number generation, and a minimal week-based engine loop. M1 adds reusable composed agent state and a Maya starting scenario.
 
 ## Requirements
 
@@ -23,6 +23,16 @@ python scripts/run_demo.py --config configs/default.toml
 
 The default configuration defines a simulation name, seed, duration in weeks, and contextual city metadata. Later milestones will add agents within that city context.
 
+To print Maya's initial immutable state snapshot from scenario data:
+
+```powershell
+python scripts/run_demo.py --config configs/default.toml --agent-scenario configs/scenarios/maya_start.toml
+```
+
+Maya-specific values live in `configs/scenarios/maya_start.toml`; the core engine and agent model remain reusable for future characters.
+
+M1 stores monetary scenario values as quoted decimal strings in TOML, parses them to `Decimal`, and serializes them back to exact strings for future checkpoints and JSON logs. Maya is also represented with state-only education, health, mental, personality, finance, memory, and skill components; no education, employment, decision, event, or personality evolution logic runs yet.
+
 ## Test
 
 ```powershell
@@ -34,6 +44,7 @@ ruff check .
 
 ```text
 configs/              Example and default configuration files
+configs/scenarios/    Agent scenario files
 runs/                 Local simulation outputs; ignored except for .gitkeep
 scripts/              Developer and demo entry-point scripts
 src/lifesim/          LifeSim Engine package
