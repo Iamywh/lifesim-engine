@@ -82,7 +82,7 @@ def _parse_financial(raw: dict[str, Any]) -> FinancialState:
                 name=item["name"],
                 balance=_money(item["balance"], "balance"),
                 minimum_payment=_money(item["minimum_payment"], "minimum_payment"),
-                interest_rate=item["interest_rate"],
+                interest_rate=_money(item["interest_rate"], "interest_rate"),
             )
             for item in _raw_items(raw, "debts")
         ),

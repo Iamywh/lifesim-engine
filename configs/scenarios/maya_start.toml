@@ -19,7 +19,7 @@ emergency_fund = "0.00"
 name = "student overdraft"
 balance = "450.00"
 minimum_payment = "25.00"
-interest_rate = 0.0
+interest_rate = "0.00"
 
 [[agent.financial.income_streams]]
 name = "occasional remote admin shifts"

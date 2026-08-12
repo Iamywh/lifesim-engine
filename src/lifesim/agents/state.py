@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from decimal import Decimal
-from typing import Any, Literal
-
-type GoalHorizon = Literal["short", "medium", "long"]
+from typing import Any
 
 
 class SerializableState:
@@ -35,13 +33,13 @@ class Debt(SerializableState):
     name: str
     balance: Decimal
     minimum_payment: Decimal
-    interest_rate: float
+    interest_rate: Decimal
 
     def __post_init__(self) -> None:
         _require_non_empty(self.name, "name")
         _require_money(self.balance, "balance")
         _require_money(self.minimum_payment, "minimum_payment")
-        _require_bounded(self.interest_rate, "interest_rate", minimum=0.0, maximum=1.0)
+        _require_rate(self.interest_rate, "interest_rate")
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +197,12 @@ class EducationState(SerializableState):
         _require_non_empty(self.status, "status")
         _require_non_negative(self.current_year, "current_year")
         _require_non_negative(self.total_years, "total_years")
+        if self.status == "enrolled":
+            _require_non_empty(self.program, "program")
+            if self.total_years < 1:
+                raise ValueError("Expected 'total_years' to be >= 1 when enrolled.")
+            if self.current_year < 1:
+                raise ValueError("Expected 'current_year' to be >= 1 when enrolled.")
         if self.total_years > 0 and self.current_year > self.total_years:
             raise ValueError("Expected 'current_year' to be <= 'total_years'.")
         _require_percent(self.progress, "progress")
@@ -452,11 +456,17 @@ def _require_non_negative(value: float, name: str) -> None:
 
 def _require_money(value: Decimal, name: str) -> None:
     if not isinstance(value, Decimal):
-        raise TypeError(f"Expected monetary value '{name}' to be Decimal.")
+        raise TypeError(f"Expected decimal value '{name}' to be Decimal.")
     if not value.is_finite():
-        raise ValueError(f"Expected monetary value '{name}' to be finite.")
+        raise ValueError(f"Expected decimal value '{name}' to be finite.")
     if value < Decimal(0):
-        raise ValueError(f"Expected monetary value '{name}' to be non-negative.")
+        raise ValueError(f"Expected decimal value '{name}' to be non-negative.")
+
+
+def _require_rate(value: Decimal, name: str) -> None:
+    _require_money(value, name)
+    if value > Decimal(1):
+        raise ValueError(f"Expected decimal rate '{name}' to be between 0 and 1.")
 
 
 def _require_percent(value: float, name: str) -> None:

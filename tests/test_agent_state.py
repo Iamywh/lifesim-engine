@@ -81,6 +81,7 @@ def test_decimal_monetary_values_serialize_to_exact_checkpoint_strings() -> None
     assert serialized["cash"] == "180.00"
     assert serialized["bank_balance"] == "980.00"
     assert serialized["debts"][0]["balance"] == "450.00"
+    assert serialized["debts"][0]["interest_rate"] == "0.00"
     assert serialized["income_streams"][0]["amount"] == "180.00"
     assert serialized["recurring_commitments"][0]["amount"] == "520.00"
 
@@ -187,6 +188,47 @@ def test_education_state_validation() -> None:
             weekly_study_hours=20.0,
         )
 
+    with pytest.raises(ValueError, match="program"):
+        EducationState(
+            status="enrolled",
+            program="",
+            current_year=1,
+            total_years=4,
+            progress=12.5,
+            weekly_study_hours=20.0,
+        )
+
+    with pytest.raises(ValueError, match="total_years"):
+        EducationState(
+            status="enrolled",
+            program="Computer Science",
+            current_year=0,
+            total_years=0,
+            progress=12.5,
+            weekly_study_hours=20.0,
+        )
+
+    with pytest.raises(ValueError, match="current_year"):
+        EducationState(
+            status="enrolled",
+            program="Computer Science",
+            current_year=0,
+            total_years=4,
+            progress=12.5,
+            weekly_study_hours=20.0,
+        )
+
+    not_enrolled = EducationState(
+        status="not_enrolled",
+        program="",
+        current_year=0,
+        total_years=0,
+        progress=0.0,
+        weekly_study_hours=0.0,
+    )
+
+    assert not_enrolled.to_dict()["program"] == ""
+
 
 def test_health_supports_sleep_debt_and_acute_conditions() -> None:
     health = HealthState(
@@ -258,7 +300,7 @@ def _generic_agent(*, identity: IdentityState) -> AgentState:
                     "small loan",
                     balance=Decimal("100.00"),
                     minimum_payment=Decimal("10.00"),
-                    interest_rate=0.1,
+                    interest_rate=Decimal("0.10"),
                 ),
             ),
             income_streams=(),
