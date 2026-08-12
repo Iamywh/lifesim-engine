@@ -1,6 +1,6 @@
 # LifeSim Engine
 
-LifeSim Engine is a deterministic simulation core for life-simulation experiments. M0 established the Python package skeleton, configuration loading, reproducible random number generation, and a minimal week-based engine loop. M1 adds reusable composed agent state and a Maya starting scenario.
+LifeSim Engine is a deterministic simulation core for life-simulation experiments. M0 established the Python package skeleton and deterministic configuration. M1 added reusable composed agent state and a Maya starting scenario. M2 integrates those pieces with a generic weekly loop that can carry an agent state from week 0 through `duration_weeks`.
 
 ## Requirements
 
@@ -23,15 +23,19 @@ python scripts/run_demo.py --config configs/default.toml
 
 The default configuration defines a simulation name, seed, duration in weeks, and contextual city metadata. Later milestones will add agents within that city context.
 
-To print Maya's initial immutable state snapshot from scenario data:
+To run Maya through the weekly engine from scenario data:
 
 ```powershell
 python scripts/run_demo.py --config configs/default.toml --agent-scenario configs/scenarios/maya_start.toml
 ```
 
-Maya-specific values live in `configs/scenarios/maya_start.toml`; the core engine and agent model remain reusable for future characters.
+Maya-specific values live in `configs/scenarios/maya_start.toml`; the core engine and agent model remain reusable for future characters. When an agent scenario is supplied, each weekly simulation snapshot includes the complete serialized `AgentState`.
 
 M1 stores monetary scenario values as quoted decimal strings in TOML, parses them to `Decimal`, and serializes them back to exact strings for future checkpoints and JSON logs. Maya is also represented with state-only education, health, mental, personality, finance, memory, and skill components; no education, employment, decision, event, or personality evolution logic runs yet.
+
+## Weekly Lifecycle
+
+An agent run starts by seeding a per-run RNG, recording week 0 with the supplied immutable `AgentState`, and then advancing week by week through a small transition pipeline. M2 ships only the orchestration mechanism: transitions receive a `WeeklyContext`, return a new `AgentState`, and are validated before the next snapshot is recorded. Transitions must not retain run-specific mutable state between runs; durable simulation state belongs in `AgentState` or explicit run context. Event, decision, employment, relationship, memory-learning, and personality-evolution systems are intentionally left for later milestones.
 
 ## Test
 
