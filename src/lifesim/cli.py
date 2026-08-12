@@ -6,6 +6,7 @@ from pathlib import Path
 
 from lifesim.agents.scenario import load_agent_state
 from lifesim.config import load_config
+from lifesim.decisions.engine import DecisionEngine, DecisionEngineTransition
 from lifesim.engine import LifeSimEngine
 from lifesim.events.catalog import load_event_catalog
 from lifesim.events.engine import EventEngine, EventEngineTransition
@@ -41,7 +42,10 @@ def main() -> None:
     if args.agent_scenario is not None:
         initial_agent = load_agent_state(args.agent_scenario)
         event_catalog = load_event_catalog(args.event_catalog)
-        transitions = (EventEngineTransition(EventEngine(event_catalog)),)
+        transitions = (
+            EventEngineTransition(EventEngine(event_catalog)),
+            DecisionEngineTransition(DecisionEngine()),
+        )
     result = LifeSimEngine(config, transitions=transitions).run(initial_agent=initial_agent)
     output = result.to_dict()
     print(json.dumps(output, indent=2, sort_keys=True))

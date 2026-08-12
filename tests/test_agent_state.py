@@ -165,6 +165,9 @@ def test_validation_rejects_impossible_values() -> None:
     with pytest.raises(ValueError, match="age_years"):
         _generic_agent(identity=_identity(display_name="Alex", age_years=-1))
 
+    with pytest.raises(TypeError, match="tags"):
+        GoalItem(description="Malformed goal tags", priority=3, tags="finance")
+
 
 def test_education_state_validation() -> None:
     education = EducationState(

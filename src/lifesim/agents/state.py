@@ -218,10 +218,16 @@ class EducationState(SerializableState):
 class GoalItem(SerializableState):
     description: str
     priority: int
+    tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.description, "description")
         _require_bounded(self.priority, "priority", minimum=1, maximum=5)
+        if isinstance(self.tags, str) or not isinstance(self.tags, list | tuple):
+            raise TypeError("Expected 'tags' to be a list or tuple of strings.")
+        object.__setattr__(self, "tags", tuple(self.tags))
+        for tag in self.tags:
+            _require_non_empty(tag, "tags")
 
 
 @dataclass(frozen=True, slots=True)

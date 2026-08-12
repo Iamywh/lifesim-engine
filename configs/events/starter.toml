@@ -11,6 +11,7 @@ cooldown_weeks = 2
 tags = ["city", "transport"]
 title = "Minor transit disruption"
 summary = "A local transit delay makes the city feel a little harder to navigate."
+time_pressure = 0.55
 
 [[events.conditions]]
 type = "numeric_lte"
@@ -23,6 +24,44 @@ path = "social.city_familiarity"
 value = 20.0
 multiplier = 1.6
 
+[[events.options]]
+option_id = "wait_and_adapt"
+label = "Wait and adapt"
+summary = "Use the delay to learn an alternate route without spending extra money."
+estimated_cost = "0.00"
+time_cost_hours = 1.0
+energy_cost = 12.0
+short_term_value = -0.1
+future_value = 0.3
+perceived_risk = 0.1
+uncertainty = 0.3
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.2
+learning_value = 0.5
+health_value = -0.1
+comfort_value = -0.2
+goal_tags = ["city", "finance", "independence"]
+
+[[events.options]]
+option_id = "pay_for_faster_transport"
+label = "Pay for faster transport"
+summary = "Spend money on a faster route and protect the rest of the day."
+estimated_cost = "14.00"
+time_cost_hours = 0.25
+energy_cost = 4.0
+short_term_value = 0.4
+future_value = -0.1
+perceived_risk = 0.05
+uncertainty = 0.1
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.1
+learning_value = 0.0
+health_value = 0.0
+comfort_value = 0.3
+goal_tags = ["city"]
+
 [[events]]
 event_id = "unexpected_small_expense"
 version = "1"
@@ -32,6 +71,7 @@ cooldown_weeks = 3
 tags = ["finance"]
 title = "Unexpected small expense"
 summary = "A small unplanned expense appears in the week."
+time_pressure = 0.65
 
 [[events.conditions]]
 type = "numeric_lte"
@@ -44,6 +84,44 @@ path = "financial.emergency_fund"
 value = "100.00"
 multiplier = 1.4
 
+[[events.options]]
+option_id = "handle_immediately"
+label = "Handle immediately"
+summary = "Pay the expense now and remove the uncertainty."
+estimated_cost = "22.00"
+time_cost_hours = 0.5
+energy_cost = 8.0
+short_term_value = 0.1
+future_value = 0.4
+perceived_risk = 0.05
+uncertainty = 0.1
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.2
+learning_value = 0.1
+health_value = 0.0
+comfort_value = 0.1
+goal_tags = ["finance", "stability"]
+
+[[events.options]]
+option_id = "postpone_expense"
+label = "Postpone expense"
+summary = "Delay the expense and keep cash available for essentials this week."
+estimated_cost = "0.00"
+time_cost_hours = 0.25
+energy_cost = 4.0
+short_term_value = 0.3
+future_value = -0.4
+perceived_risk = 0.35
+uncertainty = 0.45
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.0
+learning_value = -0.1
+health_value = 0.0
+comfort_value = 0.2
+goal_tags = ["finance"]
+
 [[events]]
 event_id = "social_invitation"
 version = "1"
@@ -53,6 +131,7 @@ cooldown_weeks = 1
 tags = ["social", "opportunity"]
 title = "Social invitation"
 summary = "Someone offers a low-pressure chance to spend time with others."
+time_pressure = 0.35
 
 [[events.conditions]]
 type = "numeric_gte"
@@ -65,6 +144,44 @@ path = "mental.loneliness"
 value = 45.0
 multiplier = 1.5
 
+[[events.options]]
+option_id = "accept_invitation"
+label = "Accept invitation"
+summary = "Join the invitation and invest energy in local connection."
+estimated_cost = "18.00"
+time_cost_hours = 3.0
+energy_cost = 28.0
+short_term_value = 0.3
+future_value = 0.5
+perceived_risk = 0.25
+uncertainty = 0.25
+social_value = 0.8
+social_pressure = 0.3
+autonomy_value = -0.1
+learning_value = 0.2
+health_value = -0.1
+comfort_value = -0.4
+goal_tags = ["social", "city", "experience"]
+
+[[events.options]]
+option_id = "decline_and_rest"
+label = "Decline and rest"
+summary = "Politely decline and recover energy for the next day."
+estimated_cost = "0.00"
+time_cost_hours = 1.0
+energy_cost = 4.0
+short_term_value = 0.2
+future_value = -0.1
+perceived_risk = 0.1
+uncertainty = 0.1
+social_value = -0.3
+social_pressure = 0.1
+autonomy_value = 0.4
+learning_value = 0.0
+health_value = 0.4
+comfort_value = 0.8
+goal_tags = ["health", "stability"]
+
 [[events]]
 event_id = "study_pressure"
 version = "1"
@@ -74,6 +191,7 @@ cooldown_weeks = 2
 tags = ["education"]
 title = "Study pressure"
 summary = "Coursework pressure becomes noticeable this week."
+time_pressure = 0.7
 
 [[events.conditions]]
 type = "string_equals"
@@ -86,6 +204,44 @@ path = "mental.mental_load"
 value = 55.0
 multiplier = 1.4
 
+[[events.options]]
+option_id = "study_extra"
+label = "Study extra"
+summary = "Spend extra hours catching up while the pressure is visible."
+estimated_cost = "0.00"
+time_cost_hours = 6.0
+energy_cost = 32.0
+short_term_value = -0.2
+future_value = 0.7
+perceived_risk = 0.1
+uncertainty = 0.2
+social_value = -0.1
+social_pressure = 0.2
+autonomy_value = 0.1
+learning_value = 0.7
+health_value = -0.2
+comfort_value = -0.5
+goal_tags = ["education", "career", "stability"]
+
+[[events.options]]
+option_id = "maintain_normal_pace"
+label = "Maintain normal pace"
+summary = "Keep the planned study routine and avoid overloading the week."
+estimated_cost = "0.00"
+time_cost_hours = 3.0
+energy_cost = 14.0
+short_term_value = 0.2
+future_value = 0.2
+perceived_risk = 0.2
+uncertainty = 0.2
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.2
+learning_value = 0.2
+health_value = 0.1
+comfort_value = 0.4
+goal_tags = ["education", "health"]
+
 [[events]]
 event_id = "low_energy_week"
 version = "1"
@@ -95,6 +251,7 @@ cooldown_weeks = 2
 tags = ["health"]
 title = "Low-energy week"
 summary = "Low energy makes ordinary tasks feel more demanding."
+time_pressure = 0.25
 
 [[events.conditions]]
 type = "numeric_lte"
@@ -106,3 +263,41 @@ type = "numeric_gte"
 path = "health.sleep_debt"
 value = 5.0
 multiplier = 1.6
+
+[[events.options]]
+option_id = "deliberately_rest"
+label = "Deliberately rest"
+summary = "Protect recovery and reduce demands where possible."
+estimated_cost = "0.00"
+time_cost_hours = 4.0
+energy_cost = 2.0
+short_term_value = 0.4
+future_value = 0.2
+perceived_risk = 0.05
+uncertainty = 0.1
+social_value = -0.1
+social_pressure = 0.0
+autonomy_value = 0.2
+learning_value = 0.0
+health_value = 0.6
+comfort_value = 0.9
+goal_tags = ["health", "stability"]
+
+[[events.options]]
+option_id = "push_through_routine"
+label = "Push through routine"
+summary = "Keep the planned routine despite low energy."
+estimated_cost = "0.00"
+time_cost_hours = 5.0
+energy_cost = 38.0
+short_term_value = 0.2
+future_value = 0.3
+perceived_risk = 0.25
+uncertainty = 0.2
+social_value = 0.0
+social_pressure = 0.2
+autonomy_value = 0.2
+learning_value = 0.1
+health_value = -0.5
+comfort_value = -0.6
+goal_tags = ["career", "education", "stability"]

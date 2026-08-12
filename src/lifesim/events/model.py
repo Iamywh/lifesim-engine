@@ -85,6 +85,70 @@ class WeightModifier(SerializableState):
 
 
 @dataclass(frozen=True, slots=True)
+class EventOption(SerializableState):
+    option_id: str
+    label: str
+    summary: str
+    availability_conditions: tuple[EventCondition, ...] = ()
+    estimated_cost: Decimal = Decimal("0.00")
+    time_cost_hours: float = 0.0
+    energy_cost: float = 0.0
+    short_term_value: float = 0.0
+    future_value: float = 0.0
+    perceived_risk: float = 0.0
+    uncertainty: float = 0.0
+    social_value: float = 0.0
+    social_pressure: float = 0.0
+    autonomy_value: float = 0.0
+    learning_value: float = 0.0
+    health_value: float = 0.0
+    comfort_value: float = 0.0
+    goal_tags: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_non_empty(self.option_id, "option_id")
+        _require_non_empty(self.label, "label")
+        _require_non_empty(self.summary, "summary")
+        object.__setattr__(
+            self,
+            "availability_conditions",
+            _typed_tuple(self.availability_conditions, EventCondition, "availability_conditions"),
+        )
+        _money(self.estimated_cost, "estimated_cost")
+        object.__setattr__(
+            self,
+            "time_cost_hours",
+            _finite_number(self.time_cost_hours, "time_cost_hours", minimum=0.0, maximum=168.0),
+        )
+        object.__setattr__(
+            self,
+            "energy_cost",
+            _finite_number(self.energy_cost, "energy_cost", minimum=0.0, maximum=100.0),
+        )
+        for field_name in (
+            "short_term_value",
+            "future_value",
+            "social_value",
+            "autonomy_value",
+            "learning_value",
+            "health_value",
+            "comfort_value",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _finite_number(getattr(self, field_name), field_name, minimum=-1.0, maximum=1.0),
+            )
+        for field_name in ("perceived_risk", "uncertainty", "social_pressure"):
+            object.__setattr__(
+                self,
+                field_name,
+                _finite_number(getattr(self, field_name), field_name, minimum=0.0, maximum=1.0),
+            )
+        object.__setattr__(self, "goal_tags", _string_sequence(self.goal_tags, "goal_tags"))
+
+
+@dataclass(frozen=True, slots=True)
 class EventDefinition(SerializableState):
     event_id: str
     version: str
@@ -96,6 +160,8 @@ class EventDefinition(SerializableState):
     tags: tuple[str, ...]
     title: str
     summary: str
+    time_pressure: float = 0.0
+    options: tuple[EventOption, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.event_id, "event_id")
@@ -114,6 +180,12 @@ class EventDefinition(SerializableState):
         object.__setattr__(self, "conditions", conditions)
         object.__setattr__(self, "weight_modifiers", modifiers)
         object.__setattr__(self, "tags", _string_sequence(self.tags, "tags"))
+        object.__setattr__(
+            self,
+            "time_pressure",
+            _finite_number(self.time_pressure, "time_pressure", minimum=0.0, maximum=1.0),
+        )
+        object.__setattr__(self, "options", _typed_tuple(self.options, EventOption, "options"))
 
     def is_conditionally_eligible(self, state: AgentState, context: WeeklyContext) -> bool:
         return all(condition.evaluate(state, context) for condition in self.conditions)
@@ -135,6 +207,8 @@ class EventDefinition(SerializableState):
             title=self.title,
             summary=self.summary,
             tags=self.tags,
+            time_pressure=self.time_pressure,
+            options=self.options,
         )
 
 
@@ -148,6 +222,8 @@ class EventOccurrence(SerializableState):
     title: str
     summary: str
     tags: tuple[str, ...]
+    time_pressure: float = 0.0
+    options: tuple[EventOption, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.event_id, "event_id")
@@ -167,6 +243,12 @@ class EventOccurrence(SerializableState):
             ),
         )
         object.__setattr__(self, "tags", _string_sequence(self.tags, "tags"))
+        object.__setattr__(
+            self,
+            "time_pressure",
+            _finite_number(self.time_pressure, "time_pressure", minimum=0.0, maximum=1.0),
+        )
+        object.__setattr__(self, "options", _typed_tuple(self.options, EventOption, "options"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,6 +448,16 @@ def _comparable_number(value: Any, name: str) -> Decimal:
     if not decimal_value.is_finite():
         raise ValueError(f"Expected '{name}' to resolve to a finite numeric value.")
     return decimal_value
+
+
+def _money(value: Any, name: str) -> Decimal:
+    if not isinstance(value, Decimal):
+        raise TypeError(f"Expected monetary value '{name}' to be Decimal.")
+    if not value.is_finite():
+        raise ValueError(f"Expected monetary value '{name}' to be finite.")
+    if value < Decimal(0):
+        raise ValueError(f"Expected monetary value '{name}' to be non-negative.")
+    return value
 
 
 def _integer(value: Any, name: str, *, minimum: int | None = None) -> int:

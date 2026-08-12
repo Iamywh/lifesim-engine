@@ -14,11 +14,14 @@ class WeeklyContext:
     week: int
     config: LifeSimConfig
     rng: Random
+    events: tuple[Any, ...] = ()
     event_history: Any | None = None
+    decision_history: Any | None = None
 
     def __post_init__(self) -> None:
         if self.week < 1:
             raise ValueError("Expected weekly transition context week to be >= 1.")
+        object.__setattr__(self, "events", tuple(self.events))
 
 
 class WeeklyTransition(Protocol):
@@ -41,11 +44,14 @@ class WeeklyTransitionResult:
     agent_state: AgentState
     events: tuple[Any, ...] = ()
     event_traces: tuple[Any, ...] = ()
+    decisions: tuple[Any, ...] = ()
     event_history: Any | None = None
+    decision_history: Any | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "events", tuple(self.events))
         object.__setattr__(self, "event_traces", tuple(self.event_traces))
+        object.__setattr__(self, "decisions", tuple(self.decisions))
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +86,9 @@ class WeeklyPipeline:
         next_state = state
         events: list[Any] = []
         event_traces: list[Any] = []
+        decisions: list[Any] = []
         event_history = context.event_history
+        decision_history = context.decision_history
 
         for transition in self._transitions:
             candidate = transition.apply(next_state, context)
@@ -97,9 +105,15 @@ class WeeklyPipeline:
             next_state = candidate_state
             events.extend(result.events)
             event_traces.extend(result.event_traces)
+            decisions.extend(result.decisions)
+            if result.events:
+                context = replace(context, events=tuple(events))
             if result.event_history is not None:
                 event_history = result.event_history
                 context = replace(context, event_history=event_history)
+            if result.decision_history is not None:
+                decision_history = result.decision_history
+                context = replace(context, decision_history=decision_history)
 
         if next_state is state:
             next_state = replace(state)
@@ -107,5 +121,7 @@ class WeeklyPipeline:
             agent_state=next_state,
             events=tuple(events),
             event_traces=tuple(event_traces),
+            decisions=tuple(decisions),
             event_history=event_history,
+            decision_history=decision_history,
         )

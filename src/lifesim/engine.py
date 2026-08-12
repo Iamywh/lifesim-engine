@@ -17,12 +17,14 @@ class SimulationState:
     agent_state: AgentState | None = None
     events: tuple[EventOccurrence, ...] = ()
     event_traces: tuple[EventSelectionTrace, ...] = ()
+    decisions: tuple[Any, ...] = ()
 
     def __post_init__(self) -> None:
         if self.week < 0:
             raise ValueError("Expected simulation state week to be >= 0.")
         object.__setattr__(self, "events", tuple(self.events))
         object.__setattr__(self, "event_traces", tuple(self.event_traces))
+        object.__setattr__(self, "decisions", tuple(self.decisions))
 
     def to_dict(self) -> dict[str, Any]:
         output = {
@@ -31,6 +33,7 @@ class SimulationState:
         if self.agent_state is not None:
             output["agent"] = self.agent_state.to_dict()
             output["events"] = [event.to_dict() for event in self.events]
+            output["decisions"] = [decision.to_dict() for decision in self.decisions]
         if self.event_traces:
             output["event_traces"] = [trace.to_dict() for trace in self.event_traces]
         return output
@@ -44,6 +47,7 @@ class SimulationResult:
     states: tuple[SimulationState, ...]
     summaries: tuple[WeeklySummary, ...] = ()
     event_history: EventHistory | None = None
+    decision_history: Any | None = None
 
     def __post_init__(self) -> None:
         weeks = tuple(state.week for state in self.states)
@@ -63,6 +67,8 @@ class SimulationResult:
             output["summaries"] = [summary.to_dict() for summary in self.summaries]
         if self.event_history is not None:
             output["event_history"] = self.event_history.to_dict()
+        if self.decision_history is not None:
+            output["decision_history"] = self.decision_history.to_dict()
         return output
 
 
@@ -85,6 +91,7 @@ class LifeSimEngine:
         ]
         summaries: list[WeeklySummary] = []
         event_history = EventHistory() if initial_agent is not None else None
+        decision_history = None
 
         if initial_agent is None:
             for week in range(1, self._config.simulation.duration_weeks + 1):
@@ -104,17 +111,21 @@ class LifeSimEngine:
                     config=self._config,
                     rng=rng,
                     event_history=event_history,
+                    decision_history=decision_history,
                 )
                 transition_result = self._pipeline.advance(previous_agent, context)
                 next_agent = transition_result.agent_state
                 if transition_result.event_history is not None:
                     event_history = transition_result.event_history
+                if transition_result.decision_history is not None:
+                    decision_history = transition_result.decision_history
                 states.append(
                     SimulationState(
                         week=week,
                         agent_state=next_agent,
                         events=transition_result.events,
                         event_traces=transition_result.event_traces,
+                        decisions=transition_result.decisions,
                     )
                 )
                 summaries.append(
@@ -133,4 +144,5 @@ class LifeSimEngine:
             states=tuple(states),
             summaries=tuple(summaries),
             event_history=event_history,
+            decision_history=decision_history,
         )
