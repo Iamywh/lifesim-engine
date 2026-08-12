@@ -1,0 +1,108 @@
+[event_settings]
+max_events_per_week = 1
+event_probability = 0.45
+
+[[events]]
+event_id = "minor_transit_disruption"
+version = "1"
+category = "city"
+base_weight = 1.0
+cooldown_weeks = 2
+tags = ["city", "transport"]
+title = "Minor transit disruption"
+summary = "A local transit delay makes the city feel a little harder to navigate."
+
+[[events.conditions]]
+type = "numeric_lte"
+path = "social.city_familiarity"
+value = 40.0
+
+[[events.weight_modifiers]]
+type = "numeric_lte"
+path = "social.city_familiarity"
+value = 20.0
+multiplier = 1.6
+
+[[events]]
+event_id = "unexpected_small_expense"
+version = "1"
+category = "finance"
+base_weight = 0.8
+cooldown_weeks = 3
+tags = ["finance"]
+title = "Unexpected small expense"
+summary = "A small unplanned expense appears in the week."
+
+[[events.conditions]]
+type = "numeric_lte"
+path = "financial.bank_balance"
+value = "1500.00"
+
+[[events.weight_modifiers]]
+type = "numeric_lte"
+path = "financial.emergency_fund"
+value = "100.00"
+multiplier = 1.4
+
+[[events]]
+event_id = "social_invitation"
+version = "1"
+category = "social"
+base_weight = 0.7
+cooldown_weeks = 1
+tags = ["social", "opportunity"]
+title = "Social invitation"
+summary = "Someone offers a low-pressure chance to spend time with others."
+
+[[events.conditions]]
+type = "numeric_gte"
+path = "personality.social_need"
+value = 0.4
+
+[[events.weight_modifiers]]
+type = "numeric_gte"
+path = "mental.loneliness"
+value = 45.0
+multiplier = 1.5
+
+[[events]]
+event_id = "study_pressure"
+version = "1"
+category = "education"
+base_weight = 0.9
+cooldown_weeks = 2
+tags = ["education"]
+title = "Study pressure"
+summary = "Coursework pressure becomes noticeable this week."
+
+[[events.conditions]]
+type = "string_equals"
+path = "education.status"
+value = "enrolled"
+
+[[events.weight_modifiers]]
+type = "numeric_gte"
+path = "mental.mental_load"
+value = 55.0
+multiplier = 1.4
+
+[[events]]
+event_id = "low_energy_week"
+version = "1"
+category = "health"
+base_weight = 0.6
+cooldown_weeks = 2
+tags = ["health"]
+title = "Low-energy week"
+summary = "Low energy makes ordinary tasks feel more demanding."
+
+[[events.conditions]]
+type = "numeric_lte"
+path = "health.energy"
+value = 70.0
+
+[[events.weight_modifiers]]
+type = "numeric_gte"
+path = "health.sleep_debt"
+value = 5.0
+multiplier = 1.6

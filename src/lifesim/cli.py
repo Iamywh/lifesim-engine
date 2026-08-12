@@ -7,6 +7,8 @@ from pathlib import Path
 from lifesim.agents.scenario import load_agent_state
 from lifesim.config import load_config
 from lifesim.engine import LifeSimEngine
+from lifesim.events.catalog import load_event_catalog
+from lifesim.events.engine import EventEngine, EventEngineTransition
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,6 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional path to an agent scenario TOML file.",
     )
+    parser.add_argument(
+        "--event-catalog",
+        type=Path,
+        default=Path("configs/events/starter.toml"),
+        help="Path to an event catalog TOML file used when an agent scenario is supplied.",
+    )
     return parser
 
 
@@ -29,8 +37,11 @@ def main() -> None:
     args = build_parser().parse_args()
     config = load_config(args.config)
     initial_agent = None
+    transitions = ()
     if args.agent_scenario is not None:
         initial_agent = load_agent_state(args.agent_scenario)
-    result = LifeSimEngine(config).run(initial_agent=initial_agent)
+        event_catalog = load_event_catalog(args.event_catalog)
+        transitions = (EventEngineTransition(EventEngine(event_catalog)),)
+    result = LifeSimEngine(config, transitions=transitions).run(initial_agent=initial_agent)
     output = result.to_dict()
     print(json.dumps(output, indent=2, sort_keys=True))

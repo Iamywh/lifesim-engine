@@ -14,6 +14,7 @@ class WeeklyContext:
     week: int
     config: LifeSimConfig
     rng: Random
+    event_history: Any | None = None
 
     def __post_init__(self) -> None:
         if self.week < 1:
@@ -21,7 +22,11 @@ class WeeklyContext:
 
 
 class WeeklyTransition(Protocol):
-    def apply(self, state: AgentState, context: WeeklyContext) -> AgentState:
+    def apply(
+        self,
+        state: AgentState,
+        context: WeeklyContext,
+    ) -> AgentState | WeeklyTransitionResult:
         """Return the next immutable agent state for the supplied week.
 
         Implementations must not retain run-specific mutable state between
@@ -29,6 +34,18 @@ class WeeklyTransition(Protocol):
         run context objects so repeated LifeSimEngine.run() calls remain
         deterministic.
         """
+
+
+@dataclass(frozen=True, slots=True)
+class WeeklyTransitionResult:
+    agent_state: AgentState
+    events: tuple[Any, ...] = ()
+    event_traces: tuple[Any, ...] = ()
+    event_history: Any | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "events", tuple(self.events))
+        object.__setattr__(self, "event_traces", tuple(self.event_traces))
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,17 +76,36 @@ class WeeklyPipeline:
     def transitions(self) -> tuple[WeeklyTransition, ...]:
         return self._transitions
 
-    def advance(self, state: AgentState, context: WeeklyContext) -> AgentState:
+    def advance(self, state: AgentState, context: WeeklyContext) -> WeeklyTransitionResult:
         next_state = state
+        events: list[Any] = []
+        event_traces: list[Any] = []
+        event_history = context.event_history
 
         for transition in self._transitions:
             candidate = transition.apply(next_state, context)
-            if not isinstance(candidate, AgentState):
+            if isinstance(candidate, WeeklyTransitionResult):
+                result = candidate
+            else:
+                result = WeeklyTransitionResult(agent_state=candidate)
+
+            candidate_state = result.agent_state
+            if not isinstance(candidate_state, AgentState):
                 raise TypeError("Expected weekly transition to return AgentState.")
-            if candidate.identity.agent_id != state.identity.agent_id:
+            if candidate_state.identity.agent_id != state.identity.agent_id:
                 raise ValueError("Weekly transitions must preserve agent identity in M2.")
-            next_state = candidate
+            next_state = candidate_state
+            events.extend(result.events)
+            event_traces.extend(result.event_traces)
+            if result.event_history is not None:
+                event_history = result.event_history
+                context = replace(context, event_history=event_history)
 
         if next_state is state:
-            return replace(state)
-        return next_state
+            next_state = replace(state)
+        return WeeklyTransitionResult(
+            agent_state=next_state,
+            events=tuple(events),
+            event_traces=tuple(event_traces),
+            event_history=event_history,
+        )
