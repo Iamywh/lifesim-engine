@@ -16,14 +16,17 @@ class WeeklyContext:
     rng: Random
     events: tuple[Any, ...] = ()
     decisions: tuple[Any, ...] = ()
+    consequences: tuple[Any, ...] = ()
     event_history: Any | None = None
     decision_history: Any | None = None
+    consequence_runtime: Any | None = None
 
     def __post_init__(self) -> None:
         if self.week < 1:
             raise ValueError("Expected weekly transition context week to be >= 1.")
         object.__setattr__(self, "events", tuple(self.events))
         object.__setattr__(self, "decisions", tuple(self.decisions))
+        object.__setattr__(self, "consequences", tuple(self.consequences))
 
 
 class WeeklyTransition(Protocol):
@@ -47,13 +50,16 @@ class WeeklyTransitionResult:
     events: tuple[Any, ...] = ()
     event_traces: tuple[Any, ...] = ()
     decisions: tuple[Any, ...] = ()
+    consequences: tuple[Any, ...] = ()
     event_history: Any | None = None
     decision_history: Any | None = None
+    consequence_runtime: Any | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "events", tuple(self.events))
         object.__setattr__(self, "event_traces", tuple(self.event_traces))
         object.__setattr__(self, "decisions", tuple(self.decisions))
+        object.__setattr__(self, "consequences", tuple(self.consequences))
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,8 +95,10 @@ class WeeklyPipeline:
         events: list[Any] = []
         event_traces: list[Any] = []
         decisions: list[Any] = []
+        consequences: list[Any] = []
         event_history = context.event_history
         decision_history = context.decision_history
+        consequence_runtime = context.consequence_runtime
 
         for transition in self._transitions:
             candidate = transition.apply(next_state, context)
@@ -108,16 +116,22 @@ class WeeklyPipeline:
             events.extend(result.events)
             event_traces.extend(result.event_traces)
             decisions.extend(result.decisions)
+            consequences.extend(result.consequences)
             if result.events:
                 context = replace(context, events=tuple(events))
             if result.decisions:
                 context = replace(context, decisions=tuple(decisions))
+            if result.consequences:
+                context = replace(context, consequences=tuple(consequences))
             if result.event_history is not None:
                 event_history = result.event_history
                 context = replace(context, event_history=event_history)
             if result.decision_history is not None:
                 decision_history = result.decision_history
                 context = replace(context, decision_history=decision_history)
+            if result.consequence_runtime is not None:
+                consequence_runtime = result.consequence_runtime
+                context = replace(context, consequence_runtime=consequence_runtime)
 
         if next_state is state:
             next_state = replace(state)
@@ -126,6 +140,8 @@ class WeeklyPipeline:
             events=tuple(events),
             event_traces=tuple(event_traces),
             decisions=tuple(decisions),
+            consequences=tuple(consequences),
             event_history=event_history,
             decision_history=decision_history,
+            consequence_runtime=consequence_runtime,
         )
