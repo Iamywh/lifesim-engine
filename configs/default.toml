@@ -1,0 +1,7 @@
+[simulation]
+name = "m0-demo"
+seed = 42
+duration_weeks = 5
+
+[city]
+name = "Example City"
