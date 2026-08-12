@@ -29,13 +29,11 @@ def main() -> None:
     args = parse_args()
     config = load_config(args.config)
     engine = LifeSimEngine(config)
-    result = engine.run()
-    output = result.to_dict()
+    initial_agent = None
     if args.agent_scenario is not None:
-        output = {
-            "simulation": output,
-            "agent": load_agent_state(args.agent_scenario).to_dict(),
-        }
+        initial_agent = load_agent_state(args.agent_scenario)
+    result = engine.run(initial_agent=initial_agent)
+    output = result.to_dict()
     print(json.dumps(output, indent=2, sort_keys=True))
 
 
