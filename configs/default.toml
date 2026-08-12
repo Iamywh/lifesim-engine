@@ -1,0 +1,7 @@
+[simulation]
+name = "m0-demo"
+seed = 42
+steps = 5
+
+[world]
+initial_population = 3
