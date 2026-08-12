@@ -10,7 +10,7 @@ from lifesim.engine import LifeSimEngine
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the LifeSim M0 demo simulation.")
+    parser = argparse.ArgumentParser(description="Run a LifeSim weekly simulation.")
     parser.add_argument(
         "--config",
         type=Path,

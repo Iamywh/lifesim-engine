@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -58,7 +59,7 @@ class LifeSimEngine:
     def __init__(
         self,
         config: LifeSimConfig,
-        transitions: tuple[WeeklyTransition, ...] = (),
+        transitions: Sequence[WeeklyTransition] = (),
     ) -> None:
         self._config = config
         self._pipeline = WeeklyPipeline(transitions)

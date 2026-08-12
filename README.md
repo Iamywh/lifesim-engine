@@ -35,7 +35,7 @@ M1 stores monetary scenario values as quoted decimal strings in TOML, parses the
 
 ## Weekly Lifecycle
 
-An agent run starts by seeding a per-run RNG, recording week 0 with the supplied immutable `AgentState`, and then advancing week by week through a small transition pipeline. M2 ships only the orchestration mechanism: transitions receive a `WeeklyContext`, return a new `AgentState`, and are validated before the next snapshot is recorded. Event, decision, employment, relationship, memory-learning, and personality-evolution systems are intentionally left for later milestones.
+An agent run starts by seeding a per-run RNG, recording week 0 with the supplied immutable `AgentState`, and then advancing week by week through a small transition pipeline. M2 ships only the orchestration mechanism: transitions receive a `WeeklyContext`, return a new `AgentState`, and are validated before the next snapshot is recorded. Transitions must not retain run-specific mutable state between runs; durable simulation state belongs in `AgentState` or explicit run context. Event, decision, employment, relationship, memory-learning, and personality-evolution systems are intentionally left for later milestones.
 
 ## Test
 

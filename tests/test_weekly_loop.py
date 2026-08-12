@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal
 from pathlib import Path
@@ -57,6 +61,22 @@ def test_repeated_agent_runs_on_same_engine_are_deterministic() -> None:
     second = engine.run(initial_agent=maya)
 
     assert first.to_dict() == second.to_dict()
+
+
+def test_rng_consuming_transition_is_deterministic_across_repeated_engine_runs() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    engine = LifeSimEngine(
+        make_config(duration_weeks=4, seed=123),
+        transitions=[SeededMoodTransition()],
+    )
+
+    first = engine.run(initial_agent=maya)
+    second = engine.run(initial_agent=maya)
+
+    assert first.to_dict() == second.to_dict()
+    assert first.states[0].agent_state is not None
+    assert first.states[1].agent_state is not None
+    assert first.states[0].agent_state.mental.mood != first.states[1].agent_state.mental.mood
 
 
 def test_generic_non_maya_agent_can_run_through_weekly_loop() -> None:
@@ -118,6 +138,17 @@ def test_transition_pipeline_runs_in_order_for_each_week() -> None:
     engine.run(initial_agent=maya)
 
     assert calls == ["economy:1", "summary:1", "economy:2", "summary:2"]
+
+
+def test_pipeline_normalizes_transition_sequence_to_tuple() -> None:
+    calls: list[str] = []
+    transitions = [RecordingTransition("economy", calls)]
+    engine = LifeSimEngine(make_config(duration_weeks=1), transitions=transitions)
+    transitions.append(RecordingTransition("late", calls))
+
+    engine.run(initial_agent=load_agent_state(MAYA_SCENARIO))
+
+    assert calls == ["economy:1"]
 
 
 def test_transition_can_replace_state_without_mutating_previous_snapshot() -> None:
@@ -185,6 +216,37 @@ def test_simulation_result_validates_week_sequence() -> None:
         )
 
 
+def test_demo_cli_agent_scenario_outputs_weekly_maya_snapshots() -> None:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "src"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_demo.py",
+            "--config",
+            "configs/default.toml",
+            "--agent-scenario",
+            "configs/scenarios/maya_start.toml",
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    output = json.loads(completed.stdout)
+
+    assert [state["week"] for state in output["states"]] == [0, 1, 2, 3, 4, 5]
+    assert output["states"][0]["agent"]["identity"]["agent_id"] == "maya"
+    assert output["states"][-1]["agent"]["financial"]["cash"] == "180.00"
+    assert output["summaries"][-1] == {
+        "agent_id": "maya",
+        "state_changed": False,
+        "week": 5,
+    }
+
+
 class RecordingTransition:
     def __init__(self, name: str, calls: list[str]) -> None:
         self._name = name
@@ -205,6 +267,17 @@ class MoodLiftTransition:
             mental=replace(
                 state.mental,
                 mood=min(100.0, state.mental.mood + self._amount),
+            ),
+        )
+
+
+class SeededMoodTransition:
+    def apply(self, state: AgentState, context: WeeklyContext) -> AgentState:
+        return replace(
+            state,
+            mental=replace(
+                state.mental,
+                mood=min(100.0, state.mental.mood + context.rng.random()),
             ),
         )
 

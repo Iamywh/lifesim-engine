@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from random import Random
 from typing import Any, Protocol
@@ -21,7 +22,13 @@ class WeeklyContext:
 
 class WeeklyTransition(Protocol):
     def apply(self, state: AgentState, context: WeeklyContext) -> AgentState:
-        """Return the next immutable agent state for the supplied week."""
+        """Return the next immutable agent state for the supplied week.
+
+        Implementations must not retain run-specific mutable state between
+        runs. Persistent simulation state belongs in AgentState or in explicit
+        run context objects so repeated LifeSimEngine.run() calls remain
+        deterministic.
+        """
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,8 +52,8 @@ class WeeklySummary:
 
 
 class WeeklyPipeline:
-    def __init__(self, transitions: tuple[WeeklyTransition, ...] = ()) -> None:
-        self._transitions = transitions
+    def __init__(self, transitions: Sequence[WeeklyTransition] = ()) -> None:
+        self._transitions = tuple(transitions)
 
     @property
     def transitions(self) -> tuple[WeeklyTransition, ...]:
