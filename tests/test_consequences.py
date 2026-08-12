@@ -18,8 +18,10 @@ from lifesim.consequences import (
     ConsequenceApplicationError,
     ConsequenceCatalog,
     ConsequenceEngine,
+    ConsequenceRecord,
     ConsequenceRuntimeState,
     DecisionConsequenceTransition,
+    EffectApplication,
     OptionConsequenceDefinition,
     OutcomeDefinition,
     ScheduledConsequenceTransition,
@@ -103,6 +105,158 @@ def test_invalid_catalog_data_references_and_duplicate_keys_fail_fast() -> None:
                 consequence_definition(option_id="known"),
             )
         )
+
+
+def test_inconsistent_scheduled_effect_timing_is_rejected() -> None:
+    with pytest.raises(ValueError, match="delay_weeks > 0"):
+        ScheduledEffect(
+            scheduled_effect_id="scheduled_bad_delay",
+            source_decision_id="decision_previous",
+            source_consequence_id="consequence_previous",
+            source_event_id="previous",
+            source_event_version="1",
+            chosen_option_id="rest",
+            source_outcome_id=None,
+            created_week=1,
+            due_week=1,
+            effect=StateEffectDefinition(path="health.energy", delta=10.0),
+        )
+
+    with pytest.raises(ValueError, match="created_week \\+ effect.delay_weeks"):
+        ScheduledEffect(
+            scheduled_effect_id="scheduled_bad_due",
+            source_decision_id="decision_previous",
+            source_consequence_id="consequence_previous",
+            source_event_id="previous",
+            source_event_version="1",
+            chosen_option_id="rest",
+            source_outcome_id=None,
+            created_week=1,
+            due_week=5,
+            effect=StateEffectDefinition(path="health.energy", delta=10.0, delay_weeks=1),
+        )
+
+
+def test_duplicate_pending_scheduled_ids_are_rejected() -> None:
+    effect = StateEffectDefinition(path="health.energy", delta=10.0, delay_weeks=1)
+    scheduled = ScheduledEffect(
+        scheduled_effect_id="scheduled_duplicate",
+        source_decision_id="decision_previous",
+        source_consequence_id="consequence_previous",
+        source_event_id="previous",
+        source_event_version="1",
+        chosen_option_id="rest",
+        source_outcome_id=None,
+        created_week=1,
+        due_week=2,
+        effect=effect,
+    )
+
+    with pytest.raises(ValueError, match="scheduled_effect_id"):
+        ConsequenceRuntimeState(pending_scheduled_effects=(scheduled, scheduled))
+
+
+def test_contradictory_effect_application_records_are_rejected() -> None:
+    with pytest.raises(ValueError, match="before/after"):
+        EffectApplication(
+            path="health.energy",
+            requested_delta=1.0,
+            before=64.0,
+            after=None,
+            clamped=False,
+            skipped=True,
+            skip_reason="condition_not_met",
+        )
+
+    with pytest.raises(ValueError, match="before and after"):
+        EffectApplication(
+            path="health.energy",
+            requested_delta=1.0,
+            before=64.0,
+            after=None,
+            clamped=False,
+        )
+
+    with pytest.raises(TypeError, match="monetary before"):
+        EffectApplication(
+            path="financial.bank_balance",
+            requested_delta=Decimal("-1.00"),
+            before=980.0,
+            after=Decimal("979.00"),
+            clamped=False,
+        )
+
+    with pytest.raises(ValueError, match="Clamping"):
+        EffectApplication(
+            path="health.sleep_debt",
+            requested_delta=1.0,
+            before=0.0,
+            after=1.0,
+            clamped=True,
+        )
+
+
+def test_malformed_outcome_audit_records_are_rejected() -> None:
+    with pytest.raises(ValueError, match="both be present"):
+        ConsequenceRecord(
+            consequence_id="consequence_bad_roll",
+            source_decision_id="decision_test",
+            source_event_id="choice_event",
+            source_event_version="1",
+            chosen_option_id="chosen",
+            week_resolved=1,
+            selected_outcome_id="normal",
+            outcome_roll=0.2,
+        )
+
+    with pytest.raises(ValueError, match="selected_outcome_id"):
+        ConsequenceRecord(
+            consequence_id="consequence_bad_selected",
+            source_decision_id="decision_test",
+            source_event_id="choice_event",
+            source_event_version="1",
+            chosen_option_id="chosen",
+            week_resolved=1,
+            outcome_roll=0.2,
+            outcome_total_weight=1.0,
+        )
+
+    with pytest.raises(ValueError, match="> 0"):
+        ConsequenceRecord(
+            consequence_id="consequence_bad_total",
+            source_decision_id="decision_test",
+            source_event_id="choice_event",
+            source_event_version="1",
+            chosen_option_id="chosen",
+            week_resolved=1,
+            selected_outcome_id="normal",
+            outcome_roll=0.0,
+            outcome_total_weight=0.0,
+        )
+
+    with pytest.raises(ValueError, match="<="):
+        ConsequenceRecord(
+            consequence_id="consequence_bad_range",
+            source_decision_id="decision_test",
+            source_event_id="choice_event",
+            source_event_version="1",
+            chosen_option_id="chosen",
+            week_resolved=1,
+            selected_outcome_id="normal",
+            outcome_roll=2.0,
+            outcome_total_weight=1.0,
+        )
+
+    assert ConsequenceRecord(
+        consequence_id="consequence_scheduled_provenance",
+        source_decision_id="decision_test",
+        source_event_id="choice_event",
+        source_event_version="1",
+        chosen_option_id="chosen",
+        week_resolved=2,
+        selected_outcome_id="normal",
+        source_scheduled_effect_id="scheduled_previous",
+    ).selected_outcome_id == "normal"
 
 
 def test_exact_decimal_deltas_serialize_to_strings() -> None:
@@ -301,7 +455,7 @@ def test_delayed_effects_due_before_same_week_event_eligibility() -> None:
         source_outcome_id=None,
         created_week=0,
         due_week=1,
-        effect=StateEffectDefinition(path="health.energy", delta=10.0),
+        effect=StateEffectDefinition(path="health.energy", delta=10.0, delay_weeks=1),
     )
     consequence_engine = ConsequenceEngine(ConsequenceCatalog())
     event_catalog = EventCatalog(
@@ -351,7 +505,49 @@ def test_decision_cannot_be_processed_twice() -> None:
         )
 
 
-def test_multiple_same_week_decisions_apply_in_deterministic_sequence() -> None:
+def test_decision_from_wrong_agent_is_rejected() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    engine = ConsequenceEngine(ConsequenceCatalog((consequence_definition(),)))
+
+    with pytest.raises(ValueError, match="does not belong to agent"):
+        engine.resolve_decisions(
+            maya,
+            context(),
+            (occurrence(),),
+            (decision_record(agent_id="alex"),),
+            ConsequenceRuntimeState(),
+        )
+
+
+def test_event_from_wrong_week_is_rejected() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    engine = ConsequenceEngine(ConsequenceCatalog((consequence_definition(),)))
+
+    with pytest.raises(ValueError, match="event occurrence week"):
+        engine.resolve_decisions(
+            maya,
+            context(week=1),
+            (occurrence(week=2),),
+            (decision_record(),),
+            ConsequenceRuntimeState(),
+        )
+
+
+def test_duplicate_same_week_event_keys_are_rejected() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    engine = ConsequenceEngine(ConsequenceCatalog((consequence_definition(),)))
+
+    with pytest.raises(ValueError, match="duplicate same-week event"):
+        engine.resolve_decisions(
+            maya,
+            context(),
+            (occurrence(), occurrence()),
+            (decision_record(),),
+            ConsequenceRuntimeState(),
+        )
+
+
+def test_decision_consequence_ordering_follows_context_decision_order() -> None:
     maya = load_agent_state(MAYA_SCENARIO)
     engine = ConsequenceEngine(
         ConsequenceCatalog(
@@ -359,12 +555,12 @@ def test_multiple_same_week_decisions_apply_in_deterministic_sequence() -> None:
                 consequence_definition(
                     event_id="a",
                     option_id="chosen",
-                    effects=(StateEffectDefinition(path="mental.stress", delta=2.0),),
+                    effects=(StateEffectDefinition(path="health.energy", delta=-10.0),),
                 ),
                 consequence_definition(
                     event_id="b",
                     option_id="chosen",
-                    effects=(StateEffectDefinition(path="mental.stress", delta=3.0),),
+                    effects=(StateEffectDefinition(path="health.energy", delta=100.0),),
                 ),
             )
         )
@@ -384,8 +580,49 @@ def test_multiple_same_week_decisions_apply_in_deterministic_sequence() -> None:
         ConsequenceRuntimeState(),
     )
 
-    assert [record.source_event_id for record in records] == ["a", "b"]
-    assert next_state.mental.stress == 62.0
+    assert [record.source_event_id for record in records] == ["b", "a"]
+    assert next_state.health.energy == 90.0
+
+
+def test_same_due_week_scheduled_effects_preserve_creation_order() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    first = ScheduledEffect(
+        scheduled_effect_id="scheduled_z_first",
+        source_decision_id="decision_previous",
+        source_consequence_id="consequence_previous",
+        source_event_id="previous",
+        source_event_version="1",
+        chosen_option_id="rest",
+        source_outcome_id=None,
+        created_week=0,
+        due_week=1,
+        effect=StateEffectDefinition(path="health.energy", delta=100.0, delay_weeks=1),
+    )
+    second = ScheduledEffect(
+        scheduled_effect_id="scheduled_a_second",
+        source_decision_id="decision_previous",
+        source_consequence_id="consequence_previous",
+        source_event_id="previous",
+        source_event_version="1",
+        chosen_option_id="rest",
+        source_outcome_id=None,
+        created_week=0,
+        due_week=1,
+        effect=StateEffectDefinition(path="health.energy", delta=-10.0, delay_weeks=1),
+    )
+    engine = ConsequenceEngine(ConsequenceCatalog())
+
+    next_state, _, records = engine.apply_due_scheduled_effects(
+        maya,
+        context(),
+        ConsequenceRuntimeState(pending_scheduled_effects=(first, second)),
+    )
+
+    assert [record.source_scheduled_effect_id for record in records] == [
+        "scheduled_z_first",
+        "scheduled_a_second",
+    ]
+    assert next_state.health.energy == 90.0
 
 
 def test_generic_agent_input_immutability_and_repeated_run_isolation() -> None:
@@ -635,6 +872,7 @@ def option(option_id: str = "chosen") -> EventOption:
 def occurrence(
     *,
     event_id: str = "choice_event",
+    week: int = 1,
     options: tuple[EventOption, ...] = (EventOption(
         option_id="chosen",
         label="Chosen",
@@ -644,7 +882,7 @@ def occurrence(
     return EventOccurrence(
         event_id=event_id,
         version="1",
-        week=1,
+        week=week,
         category="test",
         effective_weight=1.0,
         title="Choice event",
@@ -657,13 +895,15 @@ def occurrence(
 def decision_record(
     *,
     decision_id: str = "decision_test",
+    agent_id: str = "maya",
+    week: int = 1,
     event_id: str = "choice_event",
     chosen_option_id: str = "chosen",
 ) -> DecisionRecord:
     return DecisionRecord(
         decision_id=decision_id,
-        agent_id="maya",
-        week=1,
+        agent_id=agent_id,
+        week=week,
         source_event_id=event_id,
         source_event_version="1",
         time_pressure=0.0,

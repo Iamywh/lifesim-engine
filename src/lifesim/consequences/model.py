@@ -167,10 +167,12 @@ class ScheduledEffect(SerializableState):
             _require_non_empty(self.source_outcome_id, "source_outcome_id")
         _integer(self.created_week, "created_week", minimum=0)
         _integer(self.due_week, "due_week", minimum=0)
-        if self.due_week < self.created_week:
-            raise ValueError("Expected due_week to be >= created_week.")
         if not isinstance(self.effect, StateEffectDefinition):
             raise TypeError("Expected scheduled effect to contain StateEffectDefinition.")
+        if self.effect.delay_weeks <= 0:
+            raise ValueError("Scheduled effects must contain an effect with delay_weeks > 0.")
+        if self.due_week != self.created_week + self.effect.delay_weeks:
+            raise ValueError("Expected due_week to equal created_week + effect.delay_weeks.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,12 +193,44 @@ class EffectApplication(SerializableState):
             raise TypeError("Expected clamped to be bool.")
         if not isinstance(self.skipped, bool):
             raise TypeError("Expected skipped to be bool.")
-        if self.skipped and not self.skip_reason:
-            raise ValueError("Skipped effect applications must include a skip_reason.")
-        if not self.skipped and self.skip_reason:
-            raise ValueError("Applied effects must not include a skip_reason.")
+        if self.clamped and self.path not in BOUNDED_FLOAT_PATHS:
+            raise ValueError("Clamping is only valid for bounded float consequence paths.")
+        self._validate_values()
         if self.scheduled_effect_id is not None:
             _require_non_empty(self.scheduled_effect_id, "scheduled_effect_id")
+
+    def _validate_values(self) -> None:
+        if self.path in MONEY_PATHS:
+            if not isinstance(self.requested_delta, Decimal) or not self.requested_delta.is_finite():
+                raise TypeError("Expected monetary requested_delta to be finite Decimal.")
+        else:
+            object.__setattr__(
+                self,
+                "requested_delta",
+                _finite_number(self.requested_delta, "requested_delta"),
+            )
+
+        if self.skipped:
+            if self.before is not None or self.after is not None:
+                raise ValueError("Skipped effect applications must not include before/after values.")
+            if self.clamped:
+                raise ValueError("Skipped effect applications must not be clamped.")
+            if not self.skip_reason:
+                raise ValueError("Skipped effect applications must include a skip_reason.")
+            return
+
+        if self.skip_reason:
+            raise ValueError("Applied effects must not include a skip_reason.")
+        if self.before is None or self.after is None:
+            raise ValueError("Applied effects must include before and after values.")
+        if self.path in MONEY_PATHS:
+            if not isinstance(self.before, Decimal) or not self.before.is_finite():
+                raise TypeError("Expected monetary before value to be finite Decimal.")
+            if not isinstance(self.after, Decimal) or not self.after.is_finite():
+                raise TypeError("Expected monetary after value to be finite Decimal.")
+            return
+        object.__setattr__(self, "before", _finite_number(self.before, "before"))
+        object.__setattr__(self, "after", _finite_number(self.after, "after"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,10 +257,7 @@ class ConsequenceRecord(SerializableState):
         _integer(self.week_resolved, "week_resolved", minimum=0)
         if self.selected_outcome_id is not None:
             _require_non_empty(self.selected_outcome_id, "selected_outcome_id")
-        for field_name in ("outcome_roll", "outcome_total_weight"):
-            value = getattr(self, field_name)
-            if value is not None:
-                object.__setattr__(self, field_name, _finite_number(value, field_name))
+        self._validate_outcome_audit()
         if self.source_scheduled_effect_id is not None:
             _require_non_empty(self.source_scheduled_effect_id, "source_scheduled_effect_id")
         object.__setattr__(
@@ -239,6 +270,24 @@ class ConsequenceRecord(SerializableState):
             "scheduled_effects_created",
             _typed_tuple(self.scheduled_effects_created, ScheduledEffect, "scheduled_effects_created"),
         )
+
+    def _validate_outcome_audit(self) -> None:
+        has_roll = self.outcome_roll is not None
+        has_total = self.outcome_total_weight is not None
+        if has_roll != has_total:
+            raise ValueError("outcome_roll and outcome_total_weight must both be present or absent.")
+        if not has_roll:
+            return
+        if self.selected_outcome_id is None:
+            raise ValueError("selected_outcome_id is required when outcome roll audit is present.")
+        roll = _finite_number(self.outcome_roll, "outcome_roll", minimum=0.0)
+        total = _finite_number(self.outcome_total_weight, "outcome_total_weight", minimum=0.0)
+        if total <= 0.0:
+            raise ValueError("Expected outcome_total_weight to be > 0.")
+        if roll > total:
+            raise ValueError("Expected outcome_roll to be <= outcome_total_weight.")
+        object.__setattr__(self, "outcome_roll", roll)
+        object.__setattr__(self, "outcome_total_weight", total)
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +319,10 @@ class ConsequenceRuntimeState:
             self.pending_scheduled_effects,
             ScheduledEffect,
             "pending_scheduled_effects",
+        )
+        _require_unique(
+            tuple(effect.scheduled_effect_id for effect in pending),
+            "scheduled_effect_id",
         )
         object.__setattr__(self, "pending_scheduled_effects", pending)
         processed = _string_sequence(self.processed_decision_ids, "processed_decision_ids")

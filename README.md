@@ -60,6 +60,8 @@ M5 consequences are actual outcomes keyed by `event_id`, `event_version`, and `o
 
 Consequence application is atomic at the chosen outcome level. Decimal monetary underflow fails clearly without partial mutation. Bounded 0-100 float fields clamp with explicit before/after/clamped trace records, while delayed effects preserve provenance from decision to consequence to scheduled effect to application. Run-level `ConsequenceRuntimeState` resets for every `run()` and serializes consequence history plus pending scheduled effects.
 
+Same-week decision consequences are resolved in the order carried by `WeeklyContext.decisions`; transition code must not reorder them by id or hash. Delayed scheduled effects due in the same week resolve by earliest `due_week`, preserving the existing runtime tuple order for effects with equal due weeks.
+
 ## Test
 
 ```powershell

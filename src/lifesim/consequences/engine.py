@@ -30,6 +30,13 @@ class ConsequenceApplicationError(RuntimeError):
 
 
 class ConsequenceEngine:
+    """Applies chosen-option consequences without owning simulation state.
+
+    Same-week decisions are resolved in the order supplied by the weekly context.
+    Scheduled effects are resolved by earliest due week, preserving existing
+    runtime tuple order for effects with the same due week.
+    """
+
     def __init__(self, catalog: ConsequenceCatalog) -> None:
         self._catalog = catalog
 
@@ -55,7 +62,7 @@ class ConsequenceEngine:
         )
         next_state = state
         records: list[ConsequenceRecord] = []
-        for scheduled in sorted(due, key=lambda item: (item.due_week, item.scheduled_effect_id)):
+        for scheduled in sorted(due, key=lambda item: item.due_week):
             next_state, application = _apply_effect(next_state, context, scheduled.effect, scheduled)
             record = ConsequenceRecord(
                 consequence_id=_stable_id(
@@ -94,8 +101,13 @@ class ConsequenceEngine:
         pending = list(runtime.pending_scheduled_effects)
         processed = list(runtime.processed_decision_ids)
 
-        events_by_key = {(event.event_id, event.version): event for event in events}
-        for decision in sorted(decisions, key=lambda item: item.decision_id):
+        events_by_key = _events_by_key(events, context.week)
+        for decision in decisions:
+            if decision.agent_id != state.identity.agent_id:
+                raise ValueError(
+                    f"Decision '{decision.decision_id}' does not belong to agent "
+                    f"'{state.identity.agent_id}'."
+                )
             if decision.week != context.week:
                 raise ValueError("Expected decision week to match WeeklyContext.week.")
             if decision.decision_id in processed:
@@ -223,6 +235,25 @@ class ConsequenceEngine:
             if roll <= cumulative:
                 return outcome, roll, total_weight
         return definition.outcomes[-1], roll, total_weight
+
+
+def _events_by_key(
+    events: tuple[EventOccurrence, ...],
+    context_week: int,
+) -> dict[tuple[str, str], EventOccurrence]:
+    events_by_key: dict[tuple[str, str], EventOccurrence] = {}
+    for event in events:
+        if event.week != context_week:
+            raise ValueError("Expected event occurrence week to match WeeklyContext.week.")
+        key = (event.event_id, event.version)
+        if key in events_by_key:
+            event_id, version = key
+            raise ValueError(
+                "Ambiguous duplicate same-week event occurrence key "
+                f"'{event_id}/{version}'."
+            )
+        events_by_key[key] = event
+    return events_by_key
 
 
 @dataclass(frozen=True, slots=True)
