@@ -92,26 +92,32 @@ weekly_study_hours = 18.0
 [[agent.goals.short_term]]
 description = "Find stable entry-level work within the first month."
 priority = 5
+tags = ["career", "stability", "finance"]
 
 [[agent.goals.short_term]]
 description = "Learn the fastest low-cost routes around Veyra."
 priority = 3
+tags = ["city", "finance", "independence"]
 
 [[agent.goals.medium_term]]
 description = "Build three reliable local connections."
 priority = 4
+tags = ["social", "stability", "city"]
 
 [[agent.goals.medium_term]]
 description = "Create a one-month emergency buffer."
 priority = 4
+tags = ["finance", "stability", "independence"]
 
 [[agent.goals.long_term]]
 description = "Move into a stable independent living situation."
 priority = 4
+tags = ["housing", "stability", "independence"]
 
 [[agent.goals.long_term]]
 description = "Develop skills for a better-paid administrative or service role."
 priority = 3
+tags = ["career", "education", "finance"]
 
 [[agent.skills.items]]
 name = "customer service"

@@ -429,6 +429,8 @@ def test_event_occurrences_serialize_deterministically() -> None:
         "title": "Test event",
         "summary": "A deterministic test event.",
         "tags": ["test"],
+        "time_pressure": 0.0,
+        "options": [],
     }
     assert result.to_dict()["event_history"]["occurrences"][0]["event_id"] == "serial"
 
