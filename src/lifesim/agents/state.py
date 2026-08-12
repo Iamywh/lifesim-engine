@@ -222,7 +222,7 @@ class GoalItem(SerializableState):
 
     def __post_init__(self) -> None:
         _require_non_empty(self.description, "description")
-        _require_bounded(self.priority, "priority", minimum=1, maximum=5)
+        _require_integer(self.priority, "priority", minimum=1, maximum=5)
         if isinstance(self.tags, str) or not isinstance(self.tags, list | tuple):
             raise TypeError("Expected 'tags' to be a list or tuple of strings.")
         object.__setattr__(self, "tags", tuple(self.tags))
@@ -458,6 +458,13 @@ def _require_non_negative(value: float, name: str) -> None:
         raise TypeError(f"Expected '{name}' to be numeric.")
     if value < 0:
         raise ValueError(f"Expected '{name}' to be non-negative.")
+
+
+def _require_integer(value: int, name: str, *, minimum: int, maximum: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"Expected '{name}' to be an integer.")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"Expected '{name}' to be between {minimum} and {maximum}.")
 
 
 def _require_money(value: Decimal, name: str) -> None:

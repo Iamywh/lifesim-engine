@@ -185,7 +185,9 @@ class EventDefinition(SerializableState):
             "time_pressure",
             _finite_number(self.time_pressure, "time_pressure", minimum=0.0, maximum=1.0),
         )
-        object.__setattr__(self, "options", _typed_tuple(self.options, EventOption, "options"))
+        options = _typed_tuple(self.options, EventOption, "options")
+        _require_unique_option_ids(options)
+        object.__setattr__(self, "options", options)
 
     def is_conditionally_eligible(self, state: AgentState, context: WeeklyContext) -> bool:
         return all(condition.evaluate(state, context) for condition in self.conditions)
@@ -248,7 +250,9 @@ class EventOccurrence(SerializableState):
             "time_pressure",
             _finite_number(self.time_pressure, "time_pressure", minimum=0.0, maximum=1.0),
         )
-        object.__setattr__(self, "options", _typed_tuple(self.options, EventOption, "options"))
+        options = _typed_tuple(self.options, EventOption, "options")
+        _require_unique_option_ids(options)
+        object.__setattr__(self, "options", options)
 
 
 @dataclass(frozen=True, slots=True)
@@ -509,6 +513,12 @@ def _string_sequence(values: Any, name: str) -> tuple[str, ...]:
     for item in strings:
         _require_non_empty(item, name)
     return strings
+
+
+def _require_unique_option_ids(options: tuple[EventOption, ...]) -> None:
+    option_ids = [option.option_id for option in options]
+    if len(set(option_ids)) != len(option_ids):
+        raise ValueError("Expected option_id values to be unique within an event.")
 
 
 def _validate_path(path: str) -> None:

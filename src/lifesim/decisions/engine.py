@@ -38,6 +38,8 @@ class DecisionEngine:
         context: WeeklyContext,
         event: EventOccurrence,
     ) -> DecisionRecord:
+        if event.week != context.week:
+            raise ValueError("Expected event week to match WeeklyContext.week.")
         evaluations = tuple(
             self._evaluate_option(state, context, event, option)
             for option in event.options

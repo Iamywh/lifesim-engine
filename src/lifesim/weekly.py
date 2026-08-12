@@ -15,6 +15,7 @@ class WeeklyContext:
     config: LifeSimConfig
     rng: Random
     events: tuple[Any, ...] = ()
+    decisions: tuple[Any, ...] = ()
     event_history: Any | None = None
     decision_history: Any | None = None
 
@@ -22,6 +23,7 @@ class WeeklyContext:
         if self.week < 1:
             raise ValueError("Expected weekly transition context week to be >= 1.")
         object.__setattr__(self, "events", tuple(self.events))
+        object.__setattr__(self, "decisions", tuple(self.decisions))
 
 
 class WeeklyTransition(Protocol):
@@ -108,6 +110,8 @@ class WeeklyPipeline:
             decisions.extend(result.decisions)
             if result.events:
                 context = replace(context, events=tuple(events))
+            if result.decisions:
+                context = replace(context, decisions=tuple(decisions))
             if result.event_history is not None:
                 event_history = result.event_history
                 context = replace(context, event_history=event_history)

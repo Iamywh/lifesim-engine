@@ -12,9 +12,16 @@ from typing import Any
 import pytest
 
 from lifesim.agents.scenario import load_agent_state
-from lifesim.agents.state import IdentityState
+from lifesim.agents.state import AgentState, IdentityState
 from lifesim.config import CityConfig, LifeSimConfig, SimulationConfig
-from lifesim.decisions import DecisionEngine, DecisionEngineTransition, DecisionHistory
+from lifesim.decisions import (
+    DecisionEngine,
+    DecisionEngineTransition,
+    DecisionHistory,
+    DecisionRecord,
+    DecisionScoreComponent,
+    OptionEvaluation,
+)
 from lifesim.engine import LifeSimEngine
 from lifesim.events import (
     EventCatalog,
@@ -90,6 +97,164 @@ def test_malformed_option_validation() -> None:
                 ],
             }
         )
+
+
+def test_duplicate_option_ids_fail_fast_for_python_and_toml() -> None:
+    duplicate_options = (option(option_id="same"), option(option_id="same"))
+
+    with pytest.raises(ValueError, match="option_id"):
+        EventDefinition(
+            event_id="duplicate_definition_options",
+            version="1",
+            category="test",
+            base_weight=1.0,
+            conditions=(),
+            weight_modifiers=(),
+            cooldown_weeks=0,
+            tags=("test",),
+            title="Duplicate options",
+            summary="Duplicate option ids should fail.",
+            options=duplicate_options,
+        )
+
+    with pytest.raises(ValueError, match="option_id"):
+        occurrence(options=duplicate_options)
+
+    with pytest.raises(ValueError, match="option_id"):
+        parse_event_catalog(
+            {
+                "events": [
+                    {
+                        "event_id": "duplicate_toml_options",
+                        "version": "1",
+                        "category": "test",
+                        "base_weight": 1.0,
+                        "tags": ["test"],
+                        "title": "Duplicate TOML options",
+                        "summary": "Duplicate option ids should fail while loading.",
+                        "options": [
+                            option(option_id="same").to_dict(),
+                            option(option_id="same").to_dict(),
+                        ],
+                    }
+                ],
+            }
+        )
+
+
+def test_option_evaluation_invariants_reject_contradictory_audit_records() -> None:
+    component = DecisionScoreComponent(
+        name="short_term_value",
+        signal=1.0,
+        weight=1.0,
+        contribution=1.0,
+    )
+
+    with pytest.raises(ValueError, match="Available options"):
+        OptionEvaluation(
+            option_id="bad_available",
+            available=True,
+            unavailable_reason="",
+            deterministic_score=1.0,
+            controlled_noise=None,
+            final_score=1.0,
+            components=(component,),
+        )
+
+    with pytest.raises(ValueError, match="final_score"):
+        OptionEvaluation(
+            option_id="bad_sum",
+            available=True,
+            unavailable_reason="",
+            deterministic_score=1.0,
+            controlled_noise=0.2,
+            final_score=1.0,
+            components=(component,),
+        )
+
+    with pytest.raises(ValueError, match="Unavailable options"):
+        OptionEvaluation(
+            option_id="bad_unavailable",
+            available=False,
+            unavailable_reason="availability_conditions",
+            deterministic_score=1.0,
+            controlled_noise=None,
+            final_score=None,
+            components=(),
+        )
+
+    with pytest.raises(ValueError, match="score components"):
+        OptionEvaluation(
+            option_id="bad_components",
+            available=False,
+            unavailable_reason="availability_conditions",
+            deterministic_score=None,
+            controlled_noise=None,
+            final_score=None,
+            components=(component,),
+        )
+
+
+def test_decision_record_and_history_invariants_reject_ambiguous_records() -> None:
+    available = evaluation("available")
+    unavailable = evaluation("unavailable", available=False)
+
+    with pytest.raises(ValueError, match="unique"):
+        decision_record(
+            available_option_ids=("available", "available"),
+            evaluations=(available,),
+        )
+
+    with pytest.raises(ValueError, match="disjoint"):
+        decision_record(
+            available_option_ids=("available",),
+            unavailable_option_ids=("available",),
+            evaluations=(available,),
+        )
+
+    with pytest.raises(ValueError, match="match listed"):
+        decision_record(
+            available_option_ids=("available",),
+            evaluations=(available, unavailable),
+        )
+
+    with pytest.raises(ValueError, match="listed as unavailable"):
+        decision_record(
+            available_option_ids=("unavailable",),
+            evaluations=(unavailable,),
+        )
+
+    with pytest.raises(ValueError, match="unique"):
+        decision_record(
+            available_option_ids=("available",),
+            evaluations=(available, available),
+        )
+
+    with pytest.raises(ValueError, match="belong"):
+        decision_record(
+            available_option_ids=("available",),
+            unavailable_option_ids=("unavailable",),
+            chosen_option_id="unavailable",
+            evaluations=(available, unavailable),
+        )
+
+    with pytest.raises(ValueError, match="chosen_option_id"):
+        decision_record(
+            available_option_ids=(),
+            unavailable_option_ids=("unavailable",),
+            chosen_option_id="unavailable",
+            evaluations=(unavailable,),
+        )
+
+    with pytest.raises(ValueError, match="chosen_option_id"):
+        decision_record(
+            available_option_ids=("available",),
+            chosen_option_id=None,
+            evaluations=(available,),
+        )
+
+    with pytest.raises(ValueError, match="decision_id"):
+        DecisionHistory((decision_record(), decision_record()))
 
 
 def test_option_availability_conditions_and_exclusion_from_choice() -> None:
@@ -211,6 +376,38 @@ def test_controlled_noise_is_deterministic() -> None:
     assert first.to_dict() == second.to_dict()
 
 
+def test_decision_event_week_must_match_context_week() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+
+    with pytest.raises(ValueError, match="event week"):
+        DecisionEngine().decide_event(
+            maya,
+            context(week=2),
+            occurrence(event_id="wrong_week", options=(option(option_id="stay"),)),
+        )
+
+
+def test_noise_cannot_reverse_clearly_superior_option() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    event = occurrence(
+        time_pressure=1.0,
+        options=(
+            option(option_id="clearly_superior", short_term_value=0.8, future_value=0.8),
+            option(option_id="clearly_inferior", short_term_value=0.0, future_value=0.0),
+        ),
+    )
+
+    record = DecisionEngine().decide_event(maya, context(seed=39), event)
+    by_id = {evaluation.option_id: evaluation for evaluation in record.evaluations}
+    deterministic_gap = (
+        by_id["clearly_superior"].deterministic_score
+        - by_id["clearly_inferior"].deterministic_score
+    )
+
+    assert deterministic_gap > 0.24
+    assert record.chosen_option_id == "clearly_superior"
+
+
 def test_repeated_runs_and_decision_history_are_isolated() -> None:
     maya = load_agent_state(MAYA_SCENARIO)
     engine = LifeSimEngine(
@@ -275,6 +472,24 @@ def test_multiple_events_in_one_week_produce_separate_decisions() -> None:
 
     assert [record.source_event_id for record in result.records] == ["first", "second"]
     assert len(result.history.records) == 2
+
+
+def test_later_weekly_transition_can_inspect_same_week_decisions() -> None:
+    seen: list[tuple[int, tuple[str, ...]]] = []
+    maya = load_agent_state(MAYA_SCENARIO)
+    engine = LifeSimEngine(
+        make_config(duration_weeks=1, seed=12),
+        transitions=(
+            EventEngineTransition(EventEngine(catalog_with_options())),
+            DecisionEngineTransition(DecisionEngine()),
+            DecisionProbeTransition(seen),
+        ),
+    )
+
+    result = engine.run(initial_agent=maya)
+
+    assert seen == [(1, ("go",))]
+    assert result.states[1].decisions[0].chosen_option_id == "go"
 
 
 def test_decision_engine_does_not_mutate_agent_state() -> None:
@@ -462,6 +677,72 @@ def option(
         comfort_value=comfort_value,
         goal_tags=goal_tags,
     )
+
+
+def evaluation(option_id: str, *, available: bool = True) -> OptionEvaluation:
+    if not available:
+        return OptionEvaluation(
+            option_id=option_id,
+            available=False,
+            unavailable_reason="availability_conditions",
+            deterministic_score=None,
+            controlled_noise=None,
+            final_score=None,
+            components=(),
+        )
+    return OptionEvaluation(
+        option_id=option_id,
+        available=True,
+        unavailable_reason="",
+        deterministic_score=1.0,
+        controlled_noise=0.1,
+        final_score=1.1,
+        components=(
+            DecisionScoreComponent(
+                name="short_term_value",
+                signal=1.0,
+                weight=1.0,
+                contribution=1.0,
+            ),
+        ),
+    )
+
+
+def decision_record(
+    *,
+    available_option_ids: tuple[str, ...] = ("available",),
+    unavailable_option_ids: tuple[str, ...] = (),
+    chosen_option_id: str | None = "available",
+    evaluations: tuple[OptionEvaluation, ...] | None = None,
+) -> DecisionRecord:
+    return DecisionRecord(
+        decision_id="decision_test",
+        agent_id="maya",
+        week=1,
+        source_event_id="event",
+        source_event_version="1",
+        time_pressure=0.0,
+        available_option_ids=available_option_ids,
+        unavailable_option_ids=unavailable_option_ids,
+        chosen_option_id=chosen_option_id,
+        evaluations=evaluations if evaluations is not None else (evaluation("available"),),
+        strongest_positive_factors=("short_term_value",),
+        strongest_negative_factors=(),
+    )
+
+
+class DecisionProbeTransition:
+    def __init__(self, seen: list[tuple[int, tuple[str, ...]]]) -> None:
+        self._seen = seen
+
+    def apply(self, state: AgentState, context: WeeklyContext) -> AgentState:
+        self._seen.append(
+            (
+                context.week,
+                tuple(decision.chosen_option_id for decision in context.decisions),
+            )
+        )
+        return state
 
 
 def catalog_with_options(*, event_probability: float = 1.0) -> EventCatalog:

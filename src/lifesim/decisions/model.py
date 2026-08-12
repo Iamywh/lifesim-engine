@@ -53,6 +53,20 @@ class OptionEvaluation(SerializableState):
         for component in self.components:
             if not isinstance(component, DecisionScoreComponent):
                 raise TypeError("Expected components to contain DecisionScoreComponent values.")
+        scores = (self.deterministic_score, self.controlled_noise, self.final_score)
+        if self.available:
+            if any(score is None for score in scores):
+                raise ValueError("Available options must include deterministic, noise, and final scores.")
+            if not self.components:
+                raise ValueError("Available options must include score components.")
+            expected_final = round(self.deterministic_score + self.controlled_noise, 12)
+            if self.final_score != expected_final:
+                raise ValueError("Expected final_score to equal deterministic_score plus controlled_noise.")
+        else:
+            if any(score is not None for score in scores):
+                raise ValueError("Unavailable options must not include scores.")
+            if self.components:
+                raise ValueError("Unavailable options must not include score components.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,22 +95,41 @@ class DecisionRecord(SerializableState):
             "time_pressure",
             _finite_number(self.time_pressure, "time_pressure", minimum=0.0, maximum=1.0),
         )
-        object.__setattr__(
-            self,
-            "available_option_ids",
-            _string_sequence(self.available_option_ids, "available_option_ids"),
-        )
-        object.__setattr__(
-            self,
+        available_option_ids = _string_sequence(self.available_option_ids, "available_option_ids")
+        unavailable_option_ids = _string_sequence(
+            self.unavailable_option_ids,
             "unavailable_option_ids",
-            _string_sequence(self.unavailable_option_ids, "unavailable_option_ids"),
         )
+        _require_unique(available_option_ids, "available_option_ids")
+        _require_unique(unavailable_option_ids, "unavailable_option_ids")
+        if set(available_option_ids) & set(unavailable_option_ids):
+            raise ValueError("Expected available and unavailable option ids to be disjoint.")
+        object.__setattr__(self, "available_option_ids", available_option_ids)
+        object.__setattr__(self, "unavailable_option_ids", unavailable_option_ids)
         if self.chosen_option_id is not None:
             _require_non_empty(self.chosen_option_id, "chosen_option_id")
         object.__setattr__(self, "evaluations", tuple(self.evaluations))
         for evaluation in self.evaluations:
             if not isinstance(evaluation, OptionEvaluation):
                 raise TypeError("Expected evaluations to contain OptionEvaluation values.")
+        evaluation_ids = tuple(evaluation.option_id for evaluation in self.evaluations)
+        _require_unique(evaluation_ids, "evaluations option_id")
+        listed_ids = set(available_option_ids) | set(unavailable_option_ids)
+        if set(evaluation_ids) != listed_ids:
+            raise ValueError(
+                "Expected evaluation option ids to match listed available/unavailable option ids."
+            )
+        for evaluation in self.evaluations:
+            if evaluation.available and evaluation.option_id not in available_option_ids:
+                raise ValueError("Expected available evaluations to be listed as available.")
+            if not evaluation.available and evaluation.option_id not in unavailable_option_ids:
+                raise ValueError("Expected unavailable evaluations to be listed as unavailable.")
+        if available_option_ids and self.chosen_option_id is None:
+            raise ValueError("Expected chosen_option_id when at least one option is available.")
+        if not available_option_ids and self.chosen_option_id is not None:
+            raise ValueError("Expected chosen_option_id to be None when no options are available.")
+        if self.chosen_option_id is not None and self.chosen_option_id not in available_option_ids:
+            raise ValueError("Expected chosen_option_id to belong to available_option_ids.")
         object.__setattr__(
             self,
             "strongest_positive_factors",
@@ -121,6 +154,7 @@ class DecisionHistory:
         for record in self.records:
             if not isinstance(record, DecisionRecord):
                 raise TypeError("Expected decision history records to contain DecisionRecord values.")
+        _require_unique(tuple(record.decision_id for record in self.records), "decision_id")
 
     def record(self, records: tuple[DecisionRecord, ...]) -> DecisionHistory:
         return DecisionHistory(self.records + tuple(records))
@@ -174,6 +208,11 @@ def _string_sequence(values: Any, name: str) -> tuple[str, ...]:
     for item in strings:
         _require_non_empty(item, name)
     return strings
+
+
+def _require_unique(values: tuple[str, ...], name: str) -> None:
+    if len(set(values)) != len(values):
+        raise ValueError(f"Expected '{name}' values to be unique.")
 
 
 def _require_non_empty(value: str, name: str) -> None:
