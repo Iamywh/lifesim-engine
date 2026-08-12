@@ -1,7 +1,7 @@
 [simulation]
 name = "m0-demo"
 seed = 42
-steps = 5
+duration_weeks = 5
 
-[world]
-initial_population = 3
+[city]
+name = "Example City"

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import NewType
 import random
+from typing import NewType
 
 Seed = NewType("Seed", int)
 
