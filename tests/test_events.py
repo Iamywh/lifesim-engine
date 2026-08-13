@@ -437,6 +437,7 @@ def test_event_occurrences_serialize_deterministically() -> None:
 
 def test_demo_cli_event_catalog_outputs_machine_readable_traces(tmp_path: Path) -> None:
     catalog_path = tmp_path / "cli_events.toml"
+    consequence_path = tmp_path / "empty_consequences.toml"
     catalog_path.write_text(
         """
 [event_settings]
@@ -459,6 +460,7 @@ value = 1
 """.strip(),
         encoding="utf-8",
     )
+    consequence_path.write_text("consequences = []", encoding="utf-8")
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
 
@@ -472,6 +474,8 @@ value = 1
             "configs/scenarios/maya_start.toml",
             "--event-catalog",
             str(catalog_path),
+            "--consequence-catalog",
+            str(consequence_path),
         ],
         check=True,
         capture_output=True,

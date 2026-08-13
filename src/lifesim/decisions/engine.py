@@ -14,6 +14,7 @@ from lifesim.decisions.model import (
     OptionEvaluation,
 )
 from lifesim.events.model import EventOccurrence, EventOption
+from lifesim.rng import derive_stable_seed
 from lifesim.weekly import WeeklyContext, WeeklyTransitionResult
 
 
@@ -122,11 +123,6 @@ class DecisionEngineTransition:
             decisions=result.records,
             decision_history=result.history,
         )
-
-
-def derive_stable_seed(*parts: str) -> int:
-    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big")
 
 
 def _unavailable_reason(

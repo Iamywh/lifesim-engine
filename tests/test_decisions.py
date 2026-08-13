@@ -544,6 +544,7 @@ def test_decision_noise_does_not_alter_m3_event_timeline() -> None:
 
 def test_demo_cli_outputs_decisions_and_history_as_json(tmp_path: Path) -> None:
     catalog_path = tmp_path / "decision_cli.toml"
+    consequence_path = tmp_path / "empty_consequences.toml"
     catalog_path.write_text(
         """
 [event_settings]
@@ -582,6 +583,7 @@ goal_tags = ["health"]
 """.strip(),
         encoding="utf-8",
     )
+    consequence_path.write_text("consequences = []", encoding="utf-8")
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
 
@@ -595,6 +597,8 @@ goal_tags = ["health"]
             "configs/scenarios/maya_start.toml",
             "--event-catalog",
             str(catalog_path),
+            "--consequence-catalog",
+            str(consequence_path),
         ],
         check=True,
         capture_output=True,

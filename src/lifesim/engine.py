@@ -18,6 +18,7 @@ class SimulationState:
     events: tuple[EventOccurrence, ...] = ()
     event_traces: tuple[EventSelectionTrace, ...] = ()
     decisions: tuple[Any, ...] = ()
+    consequences: tuple[Any, ...] = ()
 
     def __post_init__(self) -> None:
         if self.week < 0:
@@ -25,6 +26,7 @@ class SimulationState:
         object.__setattr__(self, "events", tuple(self.events))
         object.__setattr__(self, "event_traces", tuple(self.event_traces))
         object.__setattr__(self, "decisions", tuple(self.decisions))
+        object.__setattr__(self, "consequences", tuple(self.consequences))
 
     def to_dict(self) -> dict[str, Any]:
         output = {
@@ -34,6 +36,9 @@ class SimulationState:
             output["agent"] = self.agent_state.to_dict()
             output["events"] = [event.to_dict() for event in self.events]
             output["decisions"] = [decision.to_dict() for decision in self.decisions]
+            output["consequences"] = [
+                consequence.to_dict() for consequence in self.consequences
+            ]
         if self.event_traces:
             output["event_traces"] = [trace.to_dict() for trace in self.event_traces]
         return output
@@ -48,6 +53,8 @@ class SimulationResult:
     summaries: tuple[WeeklySummary, ...] = ()
     event_history: EventHistory | None = None
     decision_history: Any | None = None
+    consequence_history: Any | None = None
+    pending_scheduled_effects: tuple[Any, ...] = ()
 
     def __post_init__(self) -> None:
         weeks = tuple(state.week for state in self.states)
@@ -55,6 +62,11 @@ class SimulationResult:
             raise ValueError("Expected first simulation week to be 0.")
         if weeks != tuple(range(len(weeks))):
             raise ValueError("Expected simulation weeks to be sequential.")
+        object.__setattr__(
+            self,
+            "pending_scheduled_effects",
+            tuple(self.pending_scheduled_effects),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         output = {
@@ -69,6 +81,12 @@ class SimulationResult:
             output["event_history"] = self.event_history.to_dict()
         if self.decision_history is not None:
             output["decision_history"] = self.decision_history.to_dict()
+        if self.consequence_history is not None:
+            output["consequence_history"] = self.consequence_history.to_dict()
+        if self.pending_scheduled_effects:
+            output["pending_scheduled_effects"] = [
+                effect.to_dict() for effect in self.pending_scheduled_effects
+            ]
         return output
 
 
@@ -92,6 +110,7 @@ class LifeSimEngine:
         summaries: list[WeeklySummary] = []
         event_history = EventHistory() if initial_agent is not None else None
         decision_history = None
+        consequence_runtime = None
 
         if initial_agent is None:
             for week in range(1, self._config.simulation.duration_weeks + 1):
@@ -112,6 +131,7 @@ class LifeSimEngine:
                     rng=rng,
                     event_history=event_history,
                     decision_history=decision_history,
+                    consequence_runtime=consequence_runtime,
                 )
                 transition_result = self._pipeline.advance(previous_agent, context)
                 next_agent = transition_result.agent_state
@@ -119,6 +139,8 @@ class LifeSimEngine:
                     event_history = transition_result.event_history
                 if transition_result.decision_history is not None:
                     decision_history = transition_result.decision_history
+                if transition_result.consequence_runtime is not None:
+                    consequence_runtime = transition_result.consequence_runtime
                 states.append(
                     SimulationState(
                         week=week,
@@ -126,6 +148,7 @@ class LifeSimEngine:
                         events=transition_result.events,
                         event_traces=transition_result.event_traces,
                         decisions=transition_result.decisions,
+                        consequences=transition_result.consequences,
                     )
                 )
                 summaries.append(
@@ -137,6 +160,12 @@ class LifeSimEngine:
                 )
                 previous_agent = next_agent
 
+        consequence_history = None
+        pending_scheduled_effects = ()
+        if consequence_runtime is not None:
+            consequence_history = consequence_runtime.history
+            pending_scheduled_effects = consequence_runtime.pending_scheduled_effects
+
         return SimulationResult(
             name=self._config.simulation.name,
             seed=self._config.simulation.seed,
@@ -145,4 +174,6 @@ class LifeSimEngine:
             summaries=tuple(summaries),
             event_history=event_history,
             decision_history=decision_history,
+            consequence_history=consequence_history,
+            pending_scheduled_effects=pending_scheduled_effects,
         )

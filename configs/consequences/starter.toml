@@ -1,0 +1,225 @@
+[[consequences]]
+event_id = "minor_transit_disruption"
+event_version = "1"
+option_id = "wait_and_adapt"
+
+[[consequences.effects]]
+path = "mental.stress"
+delta = 3.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "health.energy"
+delta = -5.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "social.city_familiarity"
+delta = 4.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "minor_transit_disruption"
+event_version = "1"
+option_id = "pay_for_faster_transport"
+
+[[consequences.effects]]
+path = "financial.bank_balance"
+delta = "-16.00"
+delay_weeks = 0
+
+[[consequences.outcomes]]
+outcome_id = "normal_route"
+weight = 0.85
+
+[[consequences.outcomes.effects]]
+path = "health.energy"
+delta = -2.0
+delay_weeks = 0
+
+[[consequences.outcomes]]
+outcome_id = "traffic_anyway"
+weight = 0.15
+
+[[consequences.outcomes.effects]]
+path = "mental.stress"
+delta = 5.0
+delay_weeks = 0
+
+[[consequences.outcomes.effects]]
+path = "health.energy"
+delta = -4.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "unexpected_small_expense"
+event_version = "1"
+option_id = "handle_immediately"
+
+[[consequences.effects]]
+path = "financial.bank_balance"
+delta = "-24.00"
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "mental.stress"
+delta = -3.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "unexpected_small_expense"
+event_version = "1"
+option_id = "postpone_expense"
+
+[[consequences.effects]]
+path = "mental.stress"
+delta = 6.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "financial.bank_balance"
+delta = "-24.00"
+delay_weeks = 1
+
+[[consequences.effects]]
+path = "mental.stress"
+delta = -2.0
+delay_weeks = 1
+
+[[consequences]]
+event_id = "social_invitation"
+event_version = "1"
+option_id = "accept_invitation"
+
+[[consequences.effects]]
+path = "financial.bank_balance"
+delta = "-20.00"
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "mental.loneliness"
+delta = -8.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "needs.belonging"
+delta = 6.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "health.energy"
+delta = -12.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "social_invitation"
+event_version = "1"
+option_id = "decline_and_rest"
+
+[[consequences.effects]]
+path = "health.energy"
+delta = 8.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "mental.recovery_need"
+delta = -6.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "mental.loneliness"
+delta = 2.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "study_pressure"
+event_version = "1"
+option_id = "study_extra"
+
+[[consequences.effects]]
+path = "education.progress"
+delta = 3.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "health.energy"
+delta = -15.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "mental.stress"
+delta = 5.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "study_pressure"
+event_version = "1"
+option_id = "maintain_normal_pace"
+
+[[consequences.effects]]
+path = "education.progress"
+delta = 1.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "mental.mental_load"
+delta = -2.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "low_energy_week"
+event_version = "1"
+option_id = "deliberately_rest"
+
+[[consequences.effects]]
+path = "health.energy"
+delta = 14.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "mental.recovery_need"
+delta = -8.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "health.sleep_debt"
+delta = -2.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "low_energy_week"
+event_version = "1"
+option_id = "push_through_routine"
+
+[[consequences.outcomes]]
+outcome_id = "managed_routine"
+weight = 0.7
+
+[[consequences.outcomes.effects]]
+path = "education.progress"
+delta = 1.0
+delay_weeks = 0
+
+[[consequences.outcomes.effects]]
+path = "health.energy"
+delta = -8.0
+delay_weeks = 0
+
+[[consequences.outcomes]]
+outcome_id = "fatigue_spike"
+weight = 0.3
+
+[[consequences.outcomes.effects]]
+path = "health.energy"
+delta = -15.0
+delay_weeks = 0
+
+[[consequences.outcomes.effects]]
+path = "health.sleep_debt"
+delta = 1.5
+delay_weeks = 0
+
+[[consequences.outcomes.effects]]
+path = "mental.stress"
+delta = 5.0
+delay_weeks = 0
