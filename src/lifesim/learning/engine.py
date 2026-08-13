@@ -13,7 +13,8 @@ from lifesim.agents.state import (
     SuccessfulPatternMemory,
 )
 from lifesim.consequences.model import ConsequenceRecord, EffectApplication
-from lifesim.events.model import EventOccurrence
+from lifesim.decisions.model import DecisionHistory, DecisionRecord
+from lifesim.events.model import EventHistory, EventOccurrence
 from lifesim.learning.model import (
     ExperienceEvaluation,
     LearningRecord,
@@ -87,28 +88,13 @@ class LearningEngine:
         learning_records: list[LearningRecord] = []
 
         for record in records:
+            if record.week_resolved != context.week:
+                raise ValueError("Expected consequence record week_resolved to match WeeklyContext.week.")
             if record.consequence_id in processed:
                 continue
-            processed.append(record.consequence_id)
             evaluation = evaluate_experience(record)
             if evaluation.salience < EPISODE_SALIENCE_THRESHOLD:
-                learning_records.append(
-                    LearningRecord(
-                        consequence_id=record.consequence_id,
-                        source_decision_id=record.source_decision_id,
-                        source_event_id=record.source_event_id,
-                        source_event_version=record.source_event_version,
-                        source_option_id=record.chosen_option_id,
-                        week_learned=context.week,
-                        evaluation=evaluation,
-                        updates=(),
-                    )
-                )
-                continue
-
-            memory, updates = _apply_memory_update(memory, context, record, evaluation)
-            learning_records.append(
-                LearningRecord(
+                learning_record = LearningRecord(
                     consequence_id=record.consequence_id,
                     source_decision_id=record.source_decision_id,
                     source_event_id=record.source_event_id,
@@ -116,9 +102,25 @@ class LearningEngine:
                     source_option_id=record.chosen_option_id,
                     week_learned=context.week,
                     evaluation=evaluation,
-                    updates=updates,
+                    updates=(),
                 )
+                processed.append(record.consequence_id)
+                learning_records.append(learning_record)
+                continue
+
+            memory, updates = _apply_memory_update(memory, context, record, evaluation)
+            learning_record = LearningRecord(
+                consequence_id=record.consequence_id,
+                source_decision_id=record.source_decision_id,
+                source_event_id=record.source_event_id,
+                source_event_version=record.source_event_version,
+                source_option_id=record.chosen_option_id,
+                week_learned=context.week,
+                evaluation=evaluation,
+                updates=updates,
             )
+            processed.append(record.consequence_id)
+            learning_records.append(learning_record)
 
         next_state = replace(state, memory=memory)
         _assert_only_memory_changed(state, next_state)
@@ -203,6 +205,8 @@ def _apply_memory_update(
     evaluation: ExperienceEvaluation,
 ) -> tuple[MemoryState, tuple[MemoryUpdate, ...]]:
     tags = _event_tags(context.events, record)
+    if not tags:
+        tags = _historical_event_tags(context, record)
     episode, episode_update = _upsert_episode(memory, context.week, record, evaluation, tags)
     episodes = _replace_episode(memory.episodic_memories, episode)
     memory = replace(memory, episodic_memories=episodes)
@@ -304,10 +308,17 @@ def _upsert_patterns(
     if len(episodes) < PATTERN_MIN_DISTINCT_EPISODES:
         return memory, ()
 
-    weighted_strength = sum(episode.strength for episode in episodes)
+    effective_strengths = tuple(
+        effective_memory_strength(episode.strength, episode.last_reinforced_week, week)
+        for episode in episodes
+    )
+    weighted_strength = sum(effective_strengths)
     if weighted_strength <= 0.0:
         return memory, ()
-    valence = sum(episode.valence * episode.strength for episode in episodes) / weighted_strength
+    valence = sum(
+        episode.valence * effective_strength
+        for episode, effective_strength in zip(episodes, effective_strengths, strict=True)
+    ) / weighted_strength
     salience = max(episode.salience for episode in episodes)
     strength = _clamp(weighted_strength / len(episodes), 0.0, 1.0)
     if abs(valence) < PATTERN_VALENCE_THRESHOLD:
@@ -567,30 +578,33 @@ def _find_by_id(memories: tuple[Any, ...], memory_id: str) -> Any | None:
 
 def _score_application(application: EffectApplication) -> float:
     delta = _delta(application)
-    if delta == 0.0:
+    if delta == 0 or delta == 0.0:
         return 0.0
     if application.path in POSITIVE_INCREASE_PATHS:
-        sign = 1.0 if delta > 0.0 else -1.0
+        sign = 1.0 if delta > 0 else -1.0
     elif application.path in NEGATIVE_INCREASE_PATHS:
-        sign = -1.0 if delta > 0.0 else 1.0
+        sign = -1.0 if delta > 0 else 1.0
     else:
         return 0.0
     return round(sign * _normalized_magnitude(application.path, delta, application.before) * _domain_weight(application.path), 12)
 
 
-def _delta(application: EffectApplication) -> float:
-    if isinstance(application.requested_delta, Decimal):
-        return float(application.requested_delta)
-    return float(application.requested_delta)
+def _delta(application: EffectApplication) -> Decimal | float:
+    if isinstance(application.before, Decimal) or isinstance(application.after, Decimal):
+        if not isinstance(application.before, Decimal) or not isinstance(application.after, Decimal):
+            raise TypeError("Expected Decimal before/after for monetary learning effects.")
+        return application.after - application.before
+    return float(application.after) - float(application.before)
 
 
-def _normalized_magnitude(path: str, delta: float, before: Decimal | float | None) -> float:
+def _normalized_magnitude(path: str, delta: Decimal | float, before: Decimal | float | None) -> float:
     amount = abs(delta)
     if path.startswith("financial."):
-        return _clamp(amount / 125.0, 0.0, 1.0)
+        decimal_amount = amount if isinstance(amount, Decimal) else Decimal(str(amount))
+        return _clamp(float(decimal_amount / Decimal("125.0")), 0.0, 1.0)
     if path == "health.sleep_debt":
-        return _clamp(amount / 5.0, 0.0, 1.0)
-    return _clamp(amount / 25.0, 0.0, 1.0)
+        return _clamp(float(amount) / 5.0, 0.0, 1.0)
+    return _clamp(float(amount) / 25.0, 0.0, 1.0)
 
 
 def _domain_weight(path: str) -> float:
@@ -622,6 +636,49 @@ def _event_tags(events: tuple[Any, ...], record: ConsequenceRecord) -> tuple[str
                     break
             return _source_ids(event.tags, option_tags)
     return ()
+
+
+def _historical_event_tags(context: WeeklyContext, record: ConsequenceRecord) -> tuple[str, ...]:
+    decision = _historical_decision(context.decision_history, record.source_decision_id)
+    event_id = decision.source_event_id if decision is not None else record.source_event_id
+    event_version = (
+        decision.source_event_version
+        if decision is not None
+        else record.source_event_version
+    )
+    option_id = decision.chosen_option_id if decision is not None else record.chosen_option_id
+    history = context.event_history
+    if not isinstance(history, EventHistory):
+        return ()
+    matching_events = tuple(
+        occurrence
+        for occurrence in history.occurrences
+        if occurrence.event_id == event_id and occurrence.version == event_version
+    )
+    if decision is not None:
+        matching_events = tuple(
+            occurrence
+            for occurrence in matching_events
+            if occurrence.week == decision.week
+        )
+    if not matching_events:
+        return ()
+    event = matching_events[-1]
+    option_tags: tuple[str, ...] = ()
+    for option in event.options:
+        if option.option_id == option_id:
+            option_tags = option.goal_tags
+            break
+    return _source_ids(event.tags, option_tags)
+
+
+def _historical_decision(history: Any, decision_id: str) -> DecisionRecord | None:
+    if not isinstance(history, DecisionHistory):
+        return None
+    for decision in history.records:
+        if decision.decision_id == decision_id:
+            return decision
+    return None
 
 
 def _consequence_records(values: tuple[Any, ...]) -> tuple[ConsequenceRecord, ...]:

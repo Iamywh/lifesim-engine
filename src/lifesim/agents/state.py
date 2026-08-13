@@ -468,6 +468,27 @@ class MemoryState(SerializableState):
         _freeze_tuple(self, "lessons_learned")
         _freeze_tuple(self, "mistakes")
         _freeze_tuple(self, "successful_patterns")
+        for attribute, item_type in (
+            ("episodic_memories", EpisodicMemory),
+            ("lessons_learned", LessonMemory),
+            ("mistakes", MistakeMemory),
+            ("successful_patterns", SuccessfulPatternMemory),
+        ):
+            for item in getattr(self, attribute):
+                if not isinstance(item, item_type):
+                    raise TypeError(f"Expected '{attribute}' to contain {item_type.__name__} values.")
+        non_empty_ids = tuple(
+            memory.memory_id
+            for memory in (
+                self.episodic_memories
+                + self.lessons_learned
+                + self.mistakes
+                + self.successful_patterns
+            )
+            if memory.memory_id
+        )
+        if len(set(non_empty_ids)) != len(non_empty_ids):
+            raise ValueError("Expected non-empty memory_id values to be unique across MemoryState.")
 
 
 @dataclass(frozen=True, slots=True)

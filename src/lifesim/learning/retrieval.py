@@ -22,13 +22,19 @@ class MemoryRetrievalResult:
     evidence: tuple[DecisionMemoryEvidence, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _RetrievalEvidence:
+    evidence: DecisionMemoryEvidence
+    lineage_ids: tuple[str, ...]
+
+
 def retrieve_memory_signal(
     state: AgentState,
     week: int,
     event: EventOccurrence,
     option: EventOption,
 ) -> MemoryRetrievalResult:
-    evidence: list[DecisionMemoryEvidence] = []
+    evidence: list[_RetrievalEvidence] = []
     query_tags = set(event.tags) | set(option.goal_tags)
     option_domains = _option_domains(option)
 
@@ -43,16 +49,17 @@ def retrieve_memory_signal(
             _pattern_evidence(memory, week, event, option, query_tags, option_domains, "successful_pattern")
         )
 
-    ordered = tuple(
+    ordered_items = tuple(
         sorted(
             evidence,
             key=lambda item: (
-                _match_rank(item.match_type),
-                item.memory_id,
+                _match_rank(item.evidence.match_type),
+                item.evidence.memory_id,
             ),
         )
     )
-    signal = _clamp(sum(item.contribution for item in ordered), -MEMORY_SIGNAL_LIMIT, MEMORY_SIGNAL_LIMIT)
+    ordered = tuple(item.evidence for item in ordered_items)
+    signal = _aggregate_signal(ordered_items)
     return MemoryRetrievalResult(signal=round(signal, 12), evidence=ordered)
 
 
@@ -63,13 +70,27 @@ def _episode_evidence(
     option: EventOption,
     query_tags: set[str],
     option_domains: set[str],
-) -> tuple[DecisionMemoryEvidence, ...]:
+) -> tuple[_RetrievalEvidence, ...]:
     if not memory.memory_id:
         return ()
     if _matches_exact(memory, event, option):
-        return (_evidence(memory.memory_id, "exact_episode", memory.strength, memory.last_reinforced_week, week, memory.valence, 1.0),)
+        return (
+            _evidence_item(
+                memory,
+                "exact_episode",
+                week,
+                1.0,
+            ),
+        )
     if _matches_broad(memory, query_tags, option_domains):
-        return (_evidence(memory.memory_id, "broad_episode", memory.strength, memory.last_reinforced_week, week, memory.valence, 0.35),)
+        return (
+            _evidence_item(
+                memory,
+                "broad_episode",
+                week,
+                0.35,
+            ),
+        )
     return ()
 
 
@@ -81,33 +102,84 @@ def _pattern_evidence(
     query_tags: set[str],
     option_domains: set[str],
     kind: str,
-) -> tuple[DecisionMemoryEvidence, ...]:
+) -> tuple[_RetrievalEvidence, ...]:
     if not memory.memory_id:
         return ()
     if _matches_exact(memory, event, option):
-        return (_evidence(memory.memory_id, f"exact_{kind}", memory.strength, memory.last_reinforced_week, week, memory.valence, 0.8),)
+        return (
+            _evidence_item(
+                memory,
+                f"exact_{kind}",
+                week,
+                0.8,
+            ),
+        )
     if _matches_broad(memory, query_tags, option_domains):
-        return (_evidence(memory.memory_id, f"broad_{kind}", memory.strength, memory.last_reinforced_week, week, memory.valence, 0.25),)
+        return (
+            _evidence_item(
+                memory,
+                f"broad_{kind}",
+                week,
+                0.25,
+            ),
+        )
     return ()
 
 
-def _evidence(
-    memory_id: str,
+def _evidence_item(
+    memory: EpisodicMemory | LessonMemory | MistakeMemory | SuccessfulPatternMemory,
     match_type: str,
-    strength: float,
-    last_reinforced_week: int,
     week: int,
-    valence: float,
     multiplier: float,
-) -> DecisionMemoryEvidence:
-    effective_strength = effective_memory_strength(strength, last_reinforced_week, week)
-    return DecisionMemoryEvidence(
-        memory_id=memory_id,
+) -> _RetrievalEvidence:
+    effective_strength = effective_memory_strength(memory.strength, memory.last_reinforced_week, week)
+    evidence = DecisionMemoryEvidence(
+        memory_id=memory.memory_id,
         match_type=match_type,
         effective_strength=effective_strength,
-        valence=round(valence, 12),
-        contribution=round(effective_strength * valence * multiplier, 12),
+        valence=round(memory.valence, 12),
+        contribution=round(effective_strength * memory.valence * multiplier, 12),
     )
+    return _RetrievalEvidence(evidence=evidence, lineage_ids=_lineage_id(memory))
+
+
+def _aggregate_signal(evidence: tuple[_RetrievalEvidence, ...]) -> float:
+    by_lineage: dict[str, list[DecisionMemoryEvidence]] = {}
+    for item in evidence:
+        lineage_ids = item.lineage_ids
+        contribution = item.evidence.contribution / len(lineage_ids)
+        for lineage_id in lineage_ids:
+            by_lineage.setdefault(lineage_id, []).append(
+                DecisionMemoryEvidence(
+                    memory_id=item.evidence.memory_id,
+                    match_type=item.evidence.match_type,
+                    effective_strength=item.evidence.effective_strength,
+                    valence=item.evidence.valence,
+                    contribution=contribution,
+                )
+            )
+
+    lineage_contributions: list[float] = []
+    for lineage_id in sorted(by_lineage):
+        values = sorted(
+            by_lineage[lineage_id],
+            key=lambda item: (abs(item.contribution), item.memory_id),
+            reverse=True,
+        )
+        strongest = values[0].contribution
+        reinforcement = sum(item.contribution for item in values[1:]) * 0.2
+        lineage_contributions.append(strongest + reinforcement)
+    ordered = sorted(lineage_contributions, key=abs, reverse=True)
+    signal = sum(contribution * (0.5**index) for index, contribution in enumerate(ordered))
+    return _clamp(signal, -MEMORY_SIGNAL_LIMIT, MEMORY_SIGNAL_LIMIT)
+
+
+def _lineage_id(
+    memory: EpisodicMemory | LessonMemory | MistakeMemory | SuccessfulPatternMemory,
+) -> tuple[str, ...]:
+    if memory.source_consequence_ids:
+        return memory.source_consequence_ids
+    return (memory.memory_id,)
 
 
 def _matches_exact(

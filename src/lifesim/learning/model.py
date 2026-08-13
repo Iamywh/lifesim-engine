@@ -135,6 +135,8 @@ class LearningHistory:
         for record in self.records:
             if not isinstance(record, LearningRecord):
                 raise TypeError("Expected learning history records to contain LearningRecord values.")
+        consequence_ids = tuple(record.consequence_id for record in self.records)
+        _require_unique(consequence_ids, "consequence_id")
 
     def record(self, records: tuple[LearningRecord, ...]) -> LearningHistory:
         return LearningHistory(self.records + tuple(records))
@@ -153,6 +155,11 @@ class LearningRuntimeState:
             raise TypeError("Expected learning runtime history to be LearningHistory.")
         processed = _string_sequence(self.processed_consequence_ids, "processed_consequence_ids")
         _require_unique(processed, "processed_consequence_ids")
+        history_ids = tuple(record.consequence_id for record in self.history.records)
+        if processed != history_ids:
+            raise ValueError(
+                "Expected processed_consequence_ids to match learning history consequence ids."
+            )
         object.__setattr__(self, "processed_consequence_ids", processed)
 
     def to_dict(self) -> dict[str, Any]:

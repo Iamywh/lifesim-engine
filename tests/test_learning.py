@@ -12,6 +12,7 @@ from lifesim.agents.scenario import load_agent_state
 from lifesim.agents.state import (
     AgentState,
     EpisodicMemory,
+    LessonMemory,
     MemoryState,
 )
 from lifesim.config import CityConfig, LifeSimConfig, SimulationConfig
@@ -28,18 +29,22 @@ from lifesim.consequences import (
     ScheduledEffect,
     StateEffectDefinition,
 )
-from lifesim.decisions import DecisionEngine, DecisionEngineTransition
+from lifesim.decisions import DecisionEngine, DecisionEngineTransition, DecisionHistory
 from lifesim.engine import LifeSimEngine
 from lifesim.events import (
     EventCatalog,
     EventDefinition,
     EventEngine,
     EventEngineTransition,
+    EventHistory,
     EventOccurrence,
     EventOption,
 )
 from lifesim.learning import (
+    ExperienceEvaluation,
     LearningEngine,
+    LearningHistory,
+    LearningRecord,
     LearningRuntimeState,
     LearningTransition,
     effective_memory_strength,
@@ -90,6 +95,54 @@ def test_trivial_noop_consequence_does_not_create_artificial_memory() -> None:
     assert next_state.memory == maya.memory
     assert records[0].evaluation.salience == 0.0
     assert records[0].updates == ()
+
+
+def test_clamped_effect_learning_uses_experienced_delta_not_requested_delta() -> None:
+    requested_huge = consequence_record(
+        applications=(
+            EffectApplication(
+                path="health.energy",
+                requested_delta=100.0,
+                before=99.0,
+                after=100.0,
+                clamped=True,
+            ),
+        )
+    )
+    requested_actual = consequence_record(
+        applications=(
+            EffectApplication(
+                path="health.energy",
+                requested_delta=1.0,
+                before=99.0,
+                after=100.0,
+                clamped=False,
+            ),
+        )
+    )
+
+    huge_evaluation = evaluate_experience(requested_huge)
+    actual_evaluation = evaluate_experience(requested_actual)
+
+    assert huge_evaluation.salience == actual_evaluation.salience
+    assert huge_evaluation.salience < 0.1
+
+
+def test_decimal_learning_uses_exact_experienced_money_delta() -> None:
+    record = consequence_record(
+        applications=(
+            application(
+                "financial.bank_balance",
+                Decimal("-999.00"),
+                Decimal("100.00"),
+                Decimal("99.99"),
+            ),
+        )
+    )
+
+    evaluation = evaluate_experience(record)
+
+    assert 0.049 < evaluation.salience < 0.051
 
 
 def test_only_experienced_consequences_are_learned() -> None:
@@ -143,7 +196,7 @@ def test_delayed_consequence_reinforces_original_decision_experience() -> None:
     state, runtime, _ = learning.learn_from_consequences(
         state,
         context(week=2),
-        (consequence_record(consequence_id="consequence_delayed"),),
+        (consequence_record(consequence_id="consequence_delayed", week_resolved=2),),
         runtime,
     )
 
@@ -172,6 +225,52 @@ def test_same_consequence_record_cannot_be_learned_twice() -> None:
     assert again_state == next_state
     assert records == ()
     assert runtime.processed_consequence_ids == ("consequence_test",)
+
+
+def test_learning_rejects_stale_or_future_consequence_week() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+
+    for week_resolved in (0, 2):
+        try:
+            LearningEngine().learn_from_consequences(
+                maya,
+                context(week=1),
+                (consequence_record(week_resolved=week_resolved),),
+                LearningRuntimeState(),
+            )
+        except ValueError as error:
+            assert "week_resolved" in str(error)
+        else:  # pragma: no cover - assertion path only
+            raise AssertionError("Expected stale/future consequence to be rejected.")
+
+
+def test_learning_history_and_runtime_reject_ambiguous_engine_truth() -> None:
+    record = LearningRecord(
+        consequence_id="consequence_a",
+        source_decision_id="decision_a",
+        source_event_id="choice_event",
+        source_event_version="1",
+        source_option_id="chosen",
+        week_learned=1,
+        evaluation=ExperienceEvaluation(0.0, 0.0, ()),
+    )
+
+    try:
+        LearningHistory((record, record))
+    except ValueError as error:
+        assert "consequence_id" in str(error)
+    else:  # pragma: no cover - assertion path only
+        raise AssertionError("Expected duplicate learning history consequence ids to fail.")
+
+    try:
+        LearningRuntimeState(
+            history=LearningHistory((record,)),
+            processed_consequence_ids=("consequence_other",),
+        )
+    except ValueError as error:
+        assert "processed_consequence_ids" in str(error)
+    else:  # pragma: no cover - assertion path only
+        raise AssertionError("Expected runtime/history mismatch to fail.")
 
 
 def test_learning_runtime_resets_between_runs() -> None:
@@ -210,6 +309,34 @@ def test_memory_processing_changes_only_agent_memory() -> None:
     assert next_state.memory != maya.memory
 
 
+def test_generated_memory_ids_must_be_unique_but_legacy_empty_ids_are_allowed() -> None:
+    assert MemoryState(
+        episodic_memories=(
+            EpisodicMemory("Legacy A", 0, 1.0),
+            EpisodicMemory("Legacy B", 0, 1.0),
+        ),
+        lessons_learned=(),
+        mistakes=(),
+        successful_patterns=(),
+    )
+
+    try:
+        MemoryState(
+            episodic_memories=(
+                EpisodicMemory("Episode", 1, 10.0, memory_id="memory_duplicate"),
+            ),
+            lessons_learned=(
+                LessonMemory("Lesson", 10.0, memory_id="memory_duplicate"),
+            ),
+            mistakes=(),
+            successful_patterns=(),
+        )
+    except ValueError as error:
+        assert "memory_id" in str(error)
+    else:  # pragma: no cover - assertion path only
+        raise AssertionError("Expected duplicate generated memory ids to fail.")
+
+
 def test_repeated_positive_experiences_form_successful_pattern() -> None:
     state, _ = learn_sequence(
         (
@@ -242,6 +369,25 @@ def test_repeated_negative_experiences_form_mistake_and_negative_lesson() -> Non
     assert state.memory.mistakes
     assert state.memory.mistakes[0].valence < 0
     assert state.memory.lessons_learned[0].valence < 0
+
+
+def test_pattern_formation_uses_decayed_episode_strength() -> None:
+    recent_state, _ = learn_sequence(
+        (
+            consequence_record(consequence_id="consequence_recent_1", decision_id="decision_recent_1"),
+            consequence_record(consequence_id="consequence_recent_2", decision_id="decision_recent_2"),
+        ),
+        weeks=(19, 20),
+    )
+    old_state, _ = learn_sequence(
+        (
+            consequence_record(consequence_id="consequence_old_1", decision_id="decision_old_1"),
+            consequence_record(consequence_id="consequence_old_2", decision_id="decision_old_2"),
+        ),
+        weeks=(1, 20),
+    )
+
+    assert recent_state.memory.mistakes[0].strength > old_state.memory.mistakes[0].strength
 
 
 def test_single_modest_bad_outcome_does_not_create_extreme_generalized_avoidance() -> None:
@@ -364,6 +510,45 @@ def test_irrelevant_memories_contribute_zero_and_signal_is_bounded() -> None:
     assert retrieve_memory_signal(strong, 1, occurrence(), option()).signal == -1.0
 
 
+def test_retrieval_preserves_derived_evidence_without_blind_double_counting() -> None:
+    one_state, _ = learn_sequence(
+        (
+            consequence_record(
+                consequence_id="consequence_one",
+                decision_id="decision_one",
+                applications=(application("mental.stress", 6.0, 57.0, 63.0),),
+            ),
+        )
+    )
+    two_state, _ = learn_sequence(
+        (
+            consequence_record(
+                consequence_id="consequence_one",
+                decision_id="decision_one",
+                applications=(application("mental.stress", 6.0, 57.0, 63.0),),
+            ),
+            consequence_record(
+                consequence_id="consequence_two",
+                decision_id="decision_two",
+                applications=(application("mental.stress", 6.0, 57.0, 63.0),),
+            ),
+        )
+    )
+
+    one = retrieve_memory_signal(one_state, 2, occurrence(), option())
+    two = retrieve_memory_signal(two_state, 3, occurrence(), option())
+
+    assert abs(one.signal) < abs(two.signal)
+    assert abs(two.signal) < 1.0
+    assert len(two.evidence) > 2
+    assert {item.memory_id for item in two.evidence} >= {
+        two_state.memory.episodic_memories[0].memory_id,
+        two_state.memory.episodic_memories[1].memory_id,
+        two_state.memory.mistakes[0].memory_id,
+        two_state.memory.lessons_learned[0].memory_id,
+    }
+
+
 def test_future_decision_can_differ_because_of_learned_experience() -> None:
     maya = load_agent_state(MAYA_SCENARIO)
     event = occurrence(
@@ -451,6 +636,75 @@ def test_scheduled_consequence_is_learned_before_same_week_decision() -> None:
     evaluation = result.states[1].decisions[0].evaluations[0]
     assert result.states[1].learning_records[0].source_decision_id == "decision_previous"
     assert evaluation.memory_evidence
+
+
+def test_delayed_only_learning_recovers_original_tags_from_histories() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    prior_event = occurrence(tags=("social", "rest"), options=(option(goal_tags=("recovery",)),))
+    prior_decision = DecisionEngine().decide_event(maya, context(week=1), prior_event)
+    delayed_record = consequence_record(
+        consequence_id="consequence_delayed_only",
+        decision_id=prior_decision.decision_id,
+        applications=(application("health.energy", 10.0, 40.0, 50.0),),
+        week_resolved=3,
+    )
+    delayed_context = context(week=3)
+    delayed_context = replace(
+        delayed_context,
+        event_history=EventHistory((prior_event,)),
+        decision_history=DecisionHistory((prior_decision,)),
+    )
+
+    state, _, _ = LearningEngine().learn_from_consequences(
+        maya,
+        delayed_context,
+        (delayed_record,),
+        LearningRuntimeState(),
+    )
+
+    assert state.memory.episodic_memories[0].tags == ("social", "rest", "recovery")
+
+
+def test_m5_outcome_rng_isolation_with_learning_enabled() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    probabilistic = OptionConsequenceDefinition(
+        event_id="choice_event",
+        event_version="1",
+        option_id="chosen",
+        outcomes=(
+            OutcomeDefinition(
+                "normal",
+                weight=0.8,
+                effects=(StateEffectDefinition(path="mental.stress", delta=1.0),),
+            ),
+            OutcomeDefinition(
+                "bad",
+                weight=0.2,
+                effects=(StateEffectDefinition(path="mental.stress", delta=8.0),),
+            ),
+        ),
+    )
+    consequence_engine = ConsequenceEngine(ConsequenceCatalog((probabilistic,)))
+    without_learning = LifeSimEngine(
+        config(duration_weeks=1, seed=5),
+        transitions=(
+            EventEngineTransition(EventEngine(event_catalog())),
+            DecisionEngineTransition(DecisionEngine()),
+            DecisionConsequenceTransition(consequence_engine),
+        ),
+    ).run(initial_agent=maya)
+    with_learning = LifeSimEngine(
+        config(duration_weeks=1, seed=5),
+        transitions=(
+            EventEngineTransition(EventEngine(event_catalog())),
+            DecisionEngineTransition(DecisionEngine()),
+            DecisionConsequenceTransition(consequence_engine),
+            LearningTransition(LearningEngine()),
+        ),
+    ).run(initial_agent=maya)
+
+    assert with_learning.states[1].decisions[0].to_dict() == without_learning.states[1].decisions[0].to_dict()
+    assert with_learning.states[1].consequences[0].to_dict() == without_learning.states[1].consequences[0].to_dict()
 
 
 def test_mixed_social_outcome_produces_limited_valence() -> None:
@@ -560,6 +814,7 @@ def learn_sequence(
     if weeks is None:
         weeks = tuple(range(1, len(records) + 1))
     for week, record in zip(weeks, records, strict=True):
+        record = replace(record, week_resolved=week)
         state, runtime, _ = LearningEngine().learn_from_consequences(
             state,
             context(week=week),
@@ -630,6 +885,7 @@ def option(
     *,
     short_term_value: float = 0.2,
     estimated_cost: Decimal = Decimal("0.00"),
+    goal_tags: tuple[str, ...] = ("money",),
 ) -> EventOption:
     return EventOption(
         option_id=option_id,
@@ -637,7 +893,7 @@ def option(
         summary=f"Synthetic {option_id} option.",
         estimated_cost=estimated_cost,
         short_term_value=short_term_value,
-        goal_tags=("money",),
+        goal_tags=goal_tags,
     )
 
 
@@ -656,6 +912,7 @@ def consequence_record(
     decision_id: str = "decision_test",
     event_id: str = "choice_event",
     option_id: str = "chosen",
+    week_resolved: int = 1,
     applications: tuple[EffectApplication, ...] = (
         EffectApplication(
             path="mental.stress",
@@ -672,7 +929,7 @@ def consequence_record(
         source_event_id=event_id,
         source_event_version="1",
         chosen_option_id=option_id,
-        week_resolved=1,
+        week_resolved=week_resolved,
         effect_applications=applications,
     )
 
