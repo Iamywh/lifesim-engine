@@ -19,6 +19,7 @@ class SimulationState:
     event_traces: tuple[EventSelectionTrace, ...] = ()
     decisions: tuple[Any, ...] = ()
     consequences: tuple[Any, ...] = ()
+    learning_records: tuple[Any, ...] = ()
 
     def __post_init__(self) -> None:
         if self.week < 0:
@@ -27,6 +28,7 @@ class SimulationState:
         object.__setattr__(self, "event_traces", tuple(self.event_traces))
         object.__setattr__(self, "decisions", tuple(self.decisions))
         object.__setattr__(self, "consequences", tuple(self.consequences))
+        object.__setattr__(self, "learning_records", tuple(self.learning_records))
 
     def to_dict(self) -> dict[str, Any]:
         output = {
@@ -38,6 +40,9 @@ class SimulationState:
             output["decisions"] = [decision.to_dict() for decision in self.decisions]
             output["consequences"] = [
                 consequence.to_dict() for consequence in self.consequences
+            ]
+            output["learning_records"] = [
+                record.to_dict() for record in self.learning_records
             ]
         if self.event_traces:
             output["event_traces"] = [trace.to_dict() for trace in self.event_traces]
@@ -55,6 +60,7 @@ class SimulationResult:
     decision_history: Any | None = None
     consequence_history: Any | None = None
     pending_scheduled_effects: tuple[Any, ...] = ()
+    learning_history: Any | None = None
 
     def __post_init__(self) -> None:
         weeks = tuple(state.week for state in self.states)
@@ -87,6 +93,8 @@ class SimulationResult:
             output["pending_scheduled_effects"] = [
                 effect.to_dict() for effect in self.pending_scheduled_effects
             ]
+        if self.learning_history is not None:
+            output["learning_history"] = self.learning_history.to_dict()
         return output
 
 
@@ -111,6 +119,7 @@ class LifeSimEngine:
         event_history = EventHistory() if initial_agent is not None else None
         decision_history = None
         consequence_runtime = None
+        learning_runtime = None
 
         if initial_agent is None:
             for week in range(1, self._config.simulation.duration_weeks + 1):
@@ -132,6 +141,7 @@ class LifeSimEngine:
                     event_history=event_history,
                     decision_history=decision_history,
                     consequence_runtime=consequence_runtime,
+                    learning_runtime=learning_runtime,
                 )
                 transition_result = self._pipeline.advance(previous_agent, context)
                 next_agent = transition_result.agent_state
@@ -141,6 +151,8 @@ class LifeSimEngine:
                     decision_history = transition_result.decision_history
                 if transition_result.consequence_runtime is not None:
                     consequence_runtime = transition_result.consequence_runtime
+                if transition_result.learning_runtime is not None:
+                    learning_runtime = transition_result.learning_runtime
                 states.append(
                     SimulationState(
                         week=week,
@@ -149,6 +161,7 @@ class LifeSimEngine:
                         event_traces=transition_result.event_traces,
                         decisions=transition_result.decisions,
                         consequences=transition_result.consequences,
+                        learning_records=transition_result.learning_records,
                     )
                 )
                 summaries.append(
@@ -165,6 +178,9 @@ class LifeSimEngine:
         if consequence_runtime is not None:
             consequence_history = consequence_runtime.history
             pending_scheduled_effects = consequence_runtime.pending_scheduled_effects
+        learning_history = None
+        if learning_runtime is not None:
+            learning_history = learning_runtime.history
 
         return SimulationResult(
             name=self._config.simulation.name,
@@ -176,4 +192,5 @@ class LifeSimEngine:
             decision_history=decision_history,
             consequence_history=consequence_history,
             pending_scheduled_effects=pending_scheduled_effects,
+            learning_history=learning_history,
         )

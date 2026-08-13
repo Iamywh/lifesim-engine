@@ -16,6 +16,7 @@ from lifesim.decisions.engine import DecisionEngine, DecisionEngineTransition
 from lifesim.engine import LifeSimEngine
 from lifesim.events.catalog import load_event_catalog
 from lifesim.events.engine import EventEngine, EventEngineTransition
+from lifesim.learning.engine import LearningEngine, LearningTransition
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,11 +60,14 @@ def main() -> None:
             event_catalog=event_catalog,
         )
         consequence_engine = ConsequenceEngine(consequence_catalog)
+        learning_engine = LearningEngine()
         transitions = (
             ScheduledConsequenceTransition(consequence_engine),
+            LearningTransition(learning_engine),
             EventEngineTransition(EventEngine(event_catalog)),
             DecisionEngineTransition(DecisionEngine()),
             DecisionConsequenceTransition(consequence_engine),
+            LearningTransition(learning_engine),
         )
     result = LifeSimEngine(config, transitions=transitions).run(initial_agent=initial_agent)
     output = result.to_dict()

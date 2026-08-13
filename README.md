@@ -1,6 +1,6 @@
 # LifeSim Engine
 
-LifeSim Engine is a deterministic simulation core for life-simulation experiments. M0 established the Python package skeleton and deterministic configuration. M1 added reusable composed agent state and a Maya starting scenario. M2 integrates those pieces with a generic weekly loop that can carry an agent state from week 0 through `duration_weeks`. M3 adds a reusable event engine for deterministic, state-conditioned weekly occurrences. M4 adds a transparent decision engine that chooses among event options. M5 adds a consequence engine that applies actual state changes and delayed effects from chosen decisions.
+LifeSim Engine is a deterministic simulation core for life-simulation experiments. M0 established the Python package skeleton and deterministic configuration. M1 added reusable composed agent state and a Maya starting scenario. M2 integrates those pieces with a generic weekly loop that can carry an agent state from week 0 through `duration_weeks`. M3 adds a reusable event engine for deterministic, state-conditioned weekly occurrences. M4 adds a transparent decision engine that chooses among event options. M5 adds a consequence engine that applies actual state changes and delayed effects from chosen decisions. M6 adds memory and learning so experienced consequences can influence future decisions.
 
 ## Requirements
 
@@ -29,7 +29,7 @@ To run Maya through the weekly engine with starter events, decisions, and conseq
 python scripts/run_demo.py --config configs/default.toml --agent-scenario configs/scenarios/maya_start.toml --event-catalog configs/events/starter.toml --consequence-catalog configs/consequences/starter.toml
 ```
 
-Maya-specific values live in `configs/scenarios/maya_start.toml`; the core engine and agent model remain reusable for future characters. Event definitions and perceived decision options live in data under `configs/events/`; real outcome definitions live separately under `configs/consequences/`. When an agent scenario is supplied, each weekly simulation snapshot includes the complete serialized `AgentState` plus that week's event occurrences, event selection traces, decisions, score traces, and consequence records.
+Maya-specific values live in `configs/scenarios/maya_start.toml`; the core engine and agent model remain reusable for future characters. Event definitions and perceived decision options live in data under `configs/events/`; real outcome definitions live separately under `configs/consequences/`. When an agent scenario is supplied, each weekly simulation snapshot includes the complete serialized `AgentState` plus that week's event occurrences, event selection traces, decisions, score traces, consequence records, and learning records.
 
 M1 stores monetary scenario values as quoted decimal strings in TOML, parses them to `Decimal`, and serializes them back to exact strings for future checkpoints and JSON logs. M5 uses the same exact Decimal handling for monetary consequence deltas. Maya is also represented with state-only education, health, mental, personality, finance, memory, and skill components; no employment, memory-learning, relationship-specific, skill-learning, or personality evolution logic runs yet.
 
@@ -41,9 +41,11 @@ The default M5 causal order is:
 
 ```text
 scheduled consequences due this week
+memory learning from those scheduled consequences
 event selection
-decision selection
+decision selection using current memory
 immediate consequences and newly scheduled delayed effects
+memory learning from immediate consequences
 ```
 
 ## Event Engine
@@ -61,6 +63,14 @@ M5 consequences are actual outcomes keyed by `event_id`, `event_version`, and `o
 Consequence application is atomic at the chosen outcome level. Decimal monetary underflow fails clearly without partial mutation. Bounded 0-100 float fields clamp with explicit before/after/clamped trace records, while delayed effects preserve provenance from decision to consequence to scheduled effect to application. Run-level `ConsequenceRuntimeState` resets for every `run()` and serializes consequence history plus pending scheduled effects.
 
 Same-week decision consequences are resolved in the order carried by `WeeklyContext.decisions`; transition code must not reorder them by id or hash. Delayed scheduled effects due in the same week resolve by earliest `due_week`, preserving the existing runtime tuple order for effects with equal due weeks.
+
+## Memory & Learning Engine
+
+M6 keeps objective history, psychological memory, and decision influence separate. `ConsequenceHistory` remains engine truth about what happened. `AgentState.memory` stores what the agent retains from experienced consequences. The Decision Engine then reads structured memories as bounded `memory_experience` score evidence for future options.
+
+Learning is deterministic and state-only. It evaluates actual applied consequence deltas into bounded valence, salience, affected domains, and strongest positive/negative effects. Meaningful experiences create or reinforce episodic memories; delayed effects from the same source decision reinforce the original episode. Repeated exact event+option experiences can form mistakes, lessons, or successful patterns, while single modest outcomes remain limited evidence.
+
+The learning transition mutates only `AgentState.memory`. It never fabricates consequences, changes option availability, reads hidden outcome probabilities, sees unexperienced outcome branches, or alters personality, skills, relationships, employment, goals, finances, health, needs, or education directly. Learning records and decision memory evidence make the chain auditable from consequence to memory update to future decision contribution.
 
 ## Test
 
@@ -80,10 +90,11 @@ runs/                 Local simulation outputs; ignored except for .gitkeep
 scripts/              Developer and demo entry-point scripts
 src/lifesim/consequences/ Consequence engine package
 src/lifesim/decisions/ Decision engine package
+src/lifesim/learning/ Memory and learning engine package
 src/lifesim/          LifeSim Engine package
 tests/                Pytest suite
 ```
 
 ## Determinism
 
-Simulation runs are seeded from configuration. Each `run()` resets its event RNG from `simulation.seed`, so repeated runs with the same configuration produce the same results. Decision noise and consequence outcome selection use deterministic SHA-256-derived local seeds and do not consume the event-selection RNG stream. RNG probes stay in tests rather than domain state.
+Simulation runs are seeded from configuration. Each `run()` resets its event RNG from `simulation.seed`, so repeated runs with the same configuration produce the same results. Decision noise and consequence outcome selection use deterministic SHA-256-derived local seeds and do not consume the event-selection RNG stream. Memory formation, reinforcement, decay, and retrieval are deterministic and use no RNG. RNG probes stay in tests rather than domain state.
