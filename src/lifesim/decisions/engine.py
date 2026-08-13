@@ -14,6 +14,7 @@ from lifesim.decisions.model import (
     OptionEvaluation,
 )
 from lifesim.events.model import EventOccurrence, EventOption
+from lifesim.learning.retrieval import retrieve_memory_signal
 from lifesim.rng import derive_stable_seed
 from lifesim.weekly import WeeklyContext, WeeklyTransitionResult
 
@@ -92,7 +93,8 @@ class DecisionEngine:
                 components=(),
             )
 
-        components = _score_components(state, event, option)
+        memory = retrieve_memory_signal(state, context.week, event, option)
+        components = _score_components(state, context, event, option, memory.signal)
         deterministic_score = round(sum(component.contribution for component in components), 12)
         noise = _decision_noise(state, context, event, option)
         return OptionEvaluation(
@@ -103,6 +105,7 @@ class DecisionEngine:
             controlled_noise=noise,
             final_score=round(deterministic_score + noise, 12),
             components=components,
+            memory_evidence=memory.evidence,
         )
 
 
@@ -140,8 +143,10 @@ def _unavailable_reason(
 
 def _score_components(
     state: AgentState,
+    context: WeeklyContext,
     event: EventOccurrence,
     option: EventOption,
+    memory_signal: float,
 ) -> tuple[DecisionScoreComponent, ...]:
     personality = state.personality
     mental = state.mental
@@ -217,6 +222,11 @@ def _score_components(
             "social_pressure",
             option.social_pressure,
             0.2 + personality.social_need * 0.3 - personality.independence * 0.4,
+        ),
+        (
+            "memory_experience",
+            memory_signal,
+            0.45 + personality.conscientiousness * 0.15 + min(0.15, context.week * 0.005),
         ),
     )
     return tuple(

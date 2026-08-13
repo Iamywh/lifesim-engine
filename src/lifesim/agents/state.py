@@ -359,21 +359,50 @@ class EpisodicMemory(SerializableState):
     summary: str
     week: int
     emotional_weight: float
+    memory_id: str = ""
+    source_decision_id: str = ""
+    source_event_id: str = ""
+    source_event_version: str = ""
+    source_option_id: str = ""
+    first_week: int = 0
+    last_reinforced_week: int = 0
+    exposure_count: int = 1
+    salience: float = 0.0
+    strength: float = 0.0
+    valence: float = 0.0
+    tags: tuple[str, ...] = ()
+    affected_domains: tuple[str, ...] = ()
+    source_consequence_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.summary, "summary")
         _require_non_negative(self.week, "week")
         _require_percent(self.emotional_weight, "emotional_weight")
+        _validate_memory_common(self)
 
 
 @dataclass(frozen=True, slots=True)
 class LessonMemory(SerializableState):
     lesson: str
     confidence: float
+    memory_id: str = ""
+    source_event_id: str = ""
+    source_event_version: str = ""
+    source_option_id: str = ""
+    first_week: int = 0
+    last_reinforced_week: int = 0
+    exposure_count: int = 1
+    salience: float = 0.0
+    strength: float = 0.0
+    valence: float = 0.0
+    tags: tuple[str, ...] = ()
+    affected_domains: tuple[str, ...] = ()
+    source_consequence_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.lesson, "lesson")
         _require_percent(self.confidence, "confidence")
+        _validate_memory_common(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,20 +410,50 @@ class MistakeMemory(SerializableState):
     mistake: str
     lesson_hint: str
     severity: float
+    memory_id: str = ""
+    source_event_id: str = ""
+    source_event_version: str = ""
+    source_option_id: str = ""
+    first_week: int = 0
+    last_reinforced_week: int = 0
+    exposure_count: int = 1
+    salience: float = 0.0
+    strength: float = 0.0
+    valence: float = 0.0
+    tags: tuple[str, ...] = ()
+    affected_domains: tuple[str, ...] = ()
+    source_consequence_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.mistake, "mistake")
         _require_percent(self.severity, "severity")
+        if not isinstance(self.lesson_hint, str):
+            raise TypeError("Expected 'lesson_hint' to be a string.")
+        _validate_memory_common(self)
 
 
 @dataclass(frozen=True, slots=True)
 class SuccessfulPatternMemory(SerializableState):
     pattern: str
     reliability: float
+    memory_id: str = ""
+    source_event_id: str = ""
+    source_event_version: str = ""
+    source_option_id: str = ""
+    first_week: int = 0
+    last_reinforced_week: int = 0
+    exposure_count: int = 1
+    salience: float = 0.0
+    strength: float = 0.0
+    valence: float = 0.0
+    tags: tuple[str, ...] = ()
+    affected_domains: tuple[str, ...] = ()
+    source_consequence_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.pattern, "pattern")
         _require_percent(self.reliability, "reliability")
+        _validate_memory_common(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -409,6 +468,27 @@ class MemoryState(SerializableState):
         _freeze_tuple(self, "lessons_learned")
         _freeze_tuple(self, "mistakes")
         _freeze_tuple(self, "successful_patterns")
+        for attribute, item_type in (
+            ("episodic_memories", EpisodicMemory),
+            ("lessons_learned", LessonMemory),
+            ("mistakes", MistakeMemory),
+            ("successful_patterns", SuccessfulPatternMemory),
+        ):
+            for item in getattr(self, attribute):
+                if not isinstance(item, item_type):
+                    raise TypeError(f"Expected '{attribute}' to contain {item_type.__name__} values.")
+        non_empty_ids = tuple(
+            memory.memory_id
+            for memory in (
+                self.episodic_memories
+                + self.lessons_learned
+                + self.mistakes
+                + self.successful_patterns
+            )
+            if memory.memory_id
+        )
+        if len(set(non_empty_ids)) != len(non_empty_ids):
+            raise ValueError("Expected non-empty memory_id values to be unique across MemoryState.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,6 +528,30 @@ def _freeze_tuple(instance: object, attribute: str) -> None:
         object.__setattr__(instance, attribute, tuple(value))
 
 
+def _validate_memory_common(instance: object) -> None:
+    for name in (
+        "memory_id",
+        "source_event_id",
+        "source_event_version",
+        "source_option_id",
+    ):
+        value = getattr(instance, name)
+        if not isinstance(value, str):
+            raise TypeError(f"Expected '{name}' to be a string.")
+    if hasattr(instance, "source_decision_id"):
+        value = instance.source_decision_id
+        if not isinstance(value, str):
+            raise TypeError("Expected 'source_decision_id' to be a string.")
+    _require_non_negative_integer(instance.first_week, "first_week")
+    _require_non_negative_integer(instance.last_reinforced_week, "last_reinforced_week")
+    _require_non_negative_integer(instance.exposure_count, "exposure_count")
+    _require_bounded(instance.salience, "salience", minimum=0.0, maximum=1.0)
+    _require_bounded(instance.strength, "strength", minimum=0.0, maximum=1.0)
+    _require_bounded(instance.valence, "valence", minimum=-1.0, maximum=1.0)
+    for name in ("tags", "affected_domains", "source_consequence_ids"):
+        object.__setattr__(instance, name, _string_sequence(getattr(instance, name), name))
+
+
 def _require_non_empty(value: str, name: str) -> None:
     if not isinstance(value, str) or not value:
         raise ValueError(f"Expected '{name}' to be a non-empty string.")
@@ -456,6 +560,13 @@ def _require_non_empty(value: str, name: str) -> None:
 def _require_non_negative(value: float, name: str) -> None:
     if not isinstance(value, int | float):
         raise TypeError(f"Expected '{name}' to be numeric.")
+    if value < 0:
+        raise ValueError(f"Expected '{name}' to be non-negative.")
+
+
+def _require_non_negative_integer(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"Expected '{name}' to be an integer.")
     if value < 0:
         raise ValueError(f"Expected '{name}' to be non-negative.")
 
@@ -488,6 +599,15 @@ def _require_percent(value: float, name: str) -> None:
 
 def _require_trait(value: float, name: str) -> None:
     _require_bounded(value, name, minimum=0.0, maximum=1.0)
+
+
+def _string_sequence(values: Any, name: str) -> tuple[str, ...]:
+    if isinstance(values, str) or not isinstance(values, list | tuple):
+        raise TypeError(f"Expected '{name}' to be a list or tuple of strings.")
+    strings = tuple(values)
+    for item in strings:
+        _require_non_empty(item, name)
+    return strings
 
 
 def _require_bounded(value: float, name: str, *, minimum: float, maximum: float) -> None:

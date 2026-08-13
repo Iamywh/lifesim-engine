@@ -26,6 +26,39 @@ class DecisionScoreComponent(SerializableState):
 
 
 @dataclass(frozen=True, slots=True)
+class DecisionMemoryEvidence(SerializableState):
+    memory_id: str
+    match_type: str
+    effective_strength: float
+    valence: float
+    contribution: float
+
+    def __post_init__(self) -> None:
+        _require_non_empty(self.memory_id, "memory_id")
+        _require_non_empty(self.match_type, "match_type")
+        object.__setattr__(
+            self,
+            "effective_strength",
+            _finite_number(
+                self.effective_strength,
+                "effective_strength",
+                minimum=0.0,
+                maximum=1.0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "valence",
+            _finite_number(self.valence, "valence", minimum=-1.0, maximum=1.0),
+        )
+        object.__setattr__(
+            self,
+            "contribution",
+            _finite_number(self.contribution, "contribution", minimum=-1.0, maximum=1.0),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class OptionEvaluation(SerializableState):
     option_id: str
     available: bool
@@ -34,6 +67,7 @@ class OptionEvaluation(SerializableState):
     controlled_noise: float | None
     final_score: float | None
     components: tuple[DecisionScoreComponent, ...] = ()
+    memory_evidence: tuple[DecisionMemoryEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.option_id, "option_id")
@@ -53,6 +87,10 @@ class OptionEvaluation(SerializableState):
         for component in self.components:
             if not isinstance(component, DecisionScoreComponent):
                 raise TypeError("Expected components to contain DecisionScoreComponent values.")
+        object.__setattr__(self, "memory_evidence", tuple(self.memory_evidence))
+        for evidence in self.memory_evidence:
+            if not isinstance(evidence, DecisionMemoryEvidence):
+                raise TypeError("Expected memory_evidence to contain DecisionMemoryEvidence values.")
         scores = (self.deterministic_score, self.controlled_noise, self.final_score)
         if self.available:
             if any(score is None for score in scores):
@@ -67,6 +105,8 @@ class OptionEvaluation(SerializableState):
                 raise ValueError("Unavailable options must not include scores.")
             if self.components:
                 raise ValueError("Unavailable options must not include score components.")
+            if self.memory_evidence:
+                raise ValueError("Unavailable options must not include memory evidence.")
 
 
 @dataclass(frozen=True, slots=True)
