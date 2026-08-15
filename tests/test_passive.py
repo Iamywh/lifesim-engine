@@ -444,6 +444,94 @@ def test_food_security_uses_minimum_adequate_food_not_full_planned_food_budget()
     assert not any(effect.reason == "food_shortfall" for effect in record.effects)
 
 
+def test_routine_spending_uses_only_bank_and_cash_when_liquid_funds_are_sufficient() -> None:
+    maya = with_financial(
+        bank=Decimal("200.00"),
+        savings=Decimal("100.00"),
+        emergency=Decimal("100.00"),
+    )
+
+    next_state, _, record = execute_profile(maya, "social_week")
+
+    assert next_state.financial.savings == Decimal("100.00")
+    assert next_state.financial.emergency_fund == Decimal("100.00")
+    assert record.spending[0].amount_paid == Decimal("58.00")
+    assert {transfer.source for entry in record.spending for transfer in entry.funding} == {
+        "bank_balance",
+    }
+
+
+def test_routine_minimum_food_can_use_savings_but_optional_spending_cannot() -> None:
+    maya = with_financial(
+        savings=Decimal("100.00"),
+        emergency=Decimal("100.00"),
+    )
+
+    next_state, _, record = execute_profile(maya, "social_week")
+
+    food, transport, discretionary = record.spending
+    assert food.amount_due == Decimal("58.00")
+    assert food.amount_paid == Decimal("38.00")
+    assert tuple(transfer.source for transfer in food.funding) == ("savings",)
+    assert transport.amount_paid == Decimal("0.00")
+    assert discretionary.amount_paid == Decimal("0.00")
+    assert next_state.financial.savings == Decimal("62.00")
+    assert next_state.financial.emergency_fund == Decimal("100.00")
+    assert next_state.needs.food_security == maya.needs.food_security
+
+
+def test_routine_minimum_food_uses_emergency_only_after_other_sources() -> None:
+    maya = with_financial(
+        savings=Decimal("20.00"),
+        emergency=Decimal("100.00"),
+    )
+
+    next_state, _, record = execute_profile(maya, "social_week")
+
+    food = record.spending[0]
+    assert food.amount_paid == Decimal("38.00")
+    assert [(transfer.source, transfer.amount) for transfer in food.funding] == [
+        ("savings", Decimal("20.00")),
+        ("emergency_fund", Decimal("18.00")),
+    ]
+    assert next_state.financial.emergency_fund == Decimal("82.00")
+    assert next_state.needs.food_security == maya.needs.food_security
+
+
+def test_social_week_does_not_exhaust_reserves_for_discretionary_spending() -> None:
+    maya = with_financial(
+        savings=Decimal("1000.00"),
+        emergency=Decimal("1000.00"),
+    )
+
+    next_state, _, record = execute_profile(maya, "social_week")
+
+    assert record.spending[2].kind == "routine_discretionary"
+    assert record.spending[2].amount_due == Decimal("55.00")
+    assert record.spending[2].amount_paid == Decimal("0.00")
+    assert next_state.financial.savings == Decimal("962.00")
+    assert next_state.financial.emergency_fund == Decimal("1000.00")
+
+
+def test_contractual_obligations_keep_full_reserve_funding_order() -> None:
+    maya = with_financial(
+        savings=Decimal("30.00"),
+        emergency=Decimal("100.00"),
+        commitments=(RecurringCommitment("rent", Decimal("50.00"), "weekly", "housing"),),
+    )
+
+    next_state, _, record = run_cashflow(maya, context())
+
+    assert record.entries[0].paid is True
+    assert [(transfer.source, transfer.amount) for transfer in record.entries[0].funding] == [
+        ("savings", Decimal("30.00")),
+        ("emergency_fund", Decimal("20.00")),
+    ]
+    assert next_state.financial.savings == Decimal("0.00")
+    assert next_state.financial.emergency_fund == Decimal("80.00")
+    assert not next_state.financial.arrears
+
+
 def test_food_security_penalty_scales_with_minimum_shortfall_without_negative_balances() -> None:
     low_food, _, low_record = execute_profile(with_financial(bank=Decimal("10.00")), "social_week")
     less_low_food, _, less_low_record = execute_profile(
@@ -507,8 +595,12 @@ def test_passive_history_rejects_duplicate_weeks_and_runtime_inconsistency() -> 
 
     with pytest.raises(ValueError, match="cashflow week"):
         runtime.history.record_cashflow(record)
-    with pytest.raises(ValueError, match="marked processed"):
+    with pytest.raises(ValueError, match="exactly match cashflow history"):
         PassiveLifeRuntimeState(history=runtime.history)
+    with pytest.raises(ValueError, match="exactly match cashflow history"):
+        PassiveLifeRuntimeState(processed_cashflow_weeks=(1,))
+    with pytest.raises(ValueError, match="exactly match routine history"):
+        PassiveLifeRuntimeState(processed_routine_execution_weeks=(1,))
 
 
 def test_missed_obligation_audits_state_effects_and_reconciles_funding() -> None:

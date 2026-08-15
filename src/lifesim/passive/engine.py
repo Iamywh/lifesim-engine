@@ -32,6 +32,7 @@ from lifesim.weekly import WeeklyContext, WeeklyTransitionResult
 
 CENT = Decimal("0.01")
 FUNDING_ORDER = ("bank_balance", "cash", "savings", "emergency_fund")
+ROUTINE_OPTIONAL_FUNDING_ORDER = ("bank_balance", "cash")
 
 
 class PassiveCashflowEngine:
@@ -410,12 +411,13 @@ def _pay_obligation(
 def _fund_payment(
     financial: FinancialState,
     amount: Decimal,
+    funding_order: tuple[str, ...] = FUNDING_ORDER,
 ) -> tuple[FinancialState, Decimal, tuple[FundingTransfer, ...]]:
     remaining = amount
     paid = Decimal("0.00")
     transfers: list[FundingTransfer] = []
-    values = {source: getattr(financial, source) for source in FUNDING_ORDER}
-    for source in FUNDING_ORDER:
+    values = {source: getattr(financial, source) for source in funding_order}
+    for source in funding_order:
         if remaining <= Decimal(0):
             break
         available = values[source]
@@ -441,25 +443,60 @@ def _apply_routine_spending(
     next_state = state
     entries: list[CashflowEntry] = []
     effects: list[RoutineEffectApplication] = []
-    spending = (
-        ("routine_food", "basic food", "food", profile.food_budget),
-        ("routine_transport", "routine transport", "transport", profile.transport_budget),
-        ("routine_discretionary", "routine discretionary", "discretionary", profile.discretionary_budget),
+    minimum_food = min(profile.minimum_food_budget, profile.food_budget)
+    optional_food = _money(profile.food_budget - minimum_food)
+    financial, minimum_paid, minimum_transfers = _fund_payment(next_state.financial, minimum_food)
+    financial, optional_paid, optional_transfers = _fund_payment(
+        financial,
+        optional_food,
+        ROUTINE_OPTIONAL_FUNDING_ORDER,
     )
-    for kind, name, category, amount in spending:
-        financial, paid, transfers = _fund_payment(next_state.financial, amount)
+    paid = _money(minimum_paid + optional_paid)
+    transfers = minimum_transfers + optional_transfers
+    next_state = replace(next_state, financial=financial)
+    minimum_shortfall = max(Decimal("0.00"), _money(minimum_food - minimum_paid))
+    if minimum_shortfall > Decimal(0):
+        next_state, effect = _bounded_replace(
+            next_state,
+            "needs.food_security",
+            -(float(minimum_shortfall / Decimal(10))),
+            "food_shortfall",
+            source=f"routine_food:{profile.profile_id}:{context.week}",
+        )
+        effects.append(effect)
+    entries.append(
+        CashflowEntry(
+            entry_id=f"routine_food:{profile.profile_id}:{context.week}",
+            kind="routine_food",
+            name="basic food",
+            amount_due=profile.food_budget,
+            amount_paid=paid,
+            cadence="weekly",
+            due_date=context.week_start.isoformat(),
+            paid=paid == profile.food_budget,
+            funding=transfers,
+        )
+    )
+
+    spending = (
+        (
+            "routine_transport",
+            "routine transport",
+            profile.transport_budget,
+        ),
+        (
+            "routine_discretionary",
+            "routine discretionary",
+            profile.discretionary_budget,
+        ),
+    )
+    for kind, name, amount in spending:
+        financial, paid, transfers = _fund_payment(
+            next_state.financial,
+            amount,
+            ROUTINE_OPTIONAL_FUNDING_ORDER,
+        )
         next_state = replace(next_state, financial=financial)
-        if category == "food" and paid < amount:
-            minimum_shortfall = max(Decimal("0.00"), _money(profile.minimum_food_budget - paid))
-            if minimum_shortfall > Decimal(0):
-                next_state, effect = _bounded_replace(
-                    next_state,
-                    "needs.food_security",
-                    -(float(minimum_shortfall / Decimal(10))),
-                    "food_shortfall",
-                    source=f"routine_food:{profile.profile_id}:{context.week}",
-                )
-                effects.append(effect)
         entries.append(
             CashflowEntry(
                 entry_id=f"{kind}:{profile.profile_id}:{context.week}",

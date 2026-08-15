@@ -293,10 +293,10 @@ class PassiveLifeRuntimeState:
             raise ValueError("Expected planned routine week to match planned routine decision presence.")
         history_cashflow_weeks = tuple(record.week for record in self.history.cashflow_records)
         history_routine_weeks = tuple(record.week for record in self.history.routine_records)
-        if set(history_cashflow_weeks) - set(self.processed_cashflow_weeks):
-            raise ValueError("Expected cashflow history weeks to be marked processed.")
-        if set(history_routine_weeks) - set(self.processed_routine_execution_weeks):
-            raise ValueError("Expected routine history weeks to be marked executed.")
+        if set(history_cashflow_weeks) != set(self.processed_cashflow_weeks):
+            raise ValueError("Expected processed cashflow weeks to exactly match cashflow history.")
+        if set(history_routine_weeks) != set(self.processed_routine_execution_weeks):
+            raise ValueError("Expected processed routine execution weeks to exactly match routine history.")
 
     def to_dict(self) -> dict[str, Any]:
         return {
