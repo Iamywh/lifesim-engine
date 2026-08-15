@@ -1,6 +1,6 @@
 # LifeSim Engine
 
-LifeSim Engine is a deterministic simulation core for life-simulation experiments. M0 established the Python package skeleton and deterministic configuration. M1 added reusable composed agent state and a Maya starting scenario. M2 integrates those pieces with a generic weekly loop that can carry an agent state from week 0 through `duration_weeks`. M3 adds a reusable event engine for deterministic, state-conditioned weekly occurrences. M4 adds a transparent decision engine that chooses among event options. M5 adds a consequence engine that applies actual state changes and delayed effects from chosen decisions. M6 adds memory and learning so experienced consequences can influence future decisions.
+LifeSim Engine is a deterministic simulation core for life-simulation experiments. M0 established the Python package skeleton and deterministic configuration. M1 added reusable composed agent state and a Maya starting scenario. M2 integrates those pieces with a generic weekly loop that can carry an agent state from week 0 through `duration_weeks`. M3 adds a reusable event engine for deterministic, state-conditioned weekly occurrences. M4 adds a transparent decision engine that chooses among event options. M5 adds a consequence engine that applies actual state changes and delayed effects from chosen decisions. M6 adds memory and learning so experienced consequences can influence future decisions. M7 adds passive life and routine state so ordinary weeks can still advance Maya's money, needs, health, and mental load.
 
 ## Requirements
 
@@ -26,26 +26,29 @@ The default configuration defines a simulation name, seed, duration in weeks, an
 To run Maya through the weekly engine with starter events, decisions, and consequences:
 
 ```powershell
-python scripts/run_demo.py --config configs/default.toml --agent-scenario configs/scenarios/maya_start.toml --event-catalog configs/events/starter.toml --consequence-catalog configs/consequences/starter.toml
+python scripts/run_demo.py --config configs/default.toml --agent-scenario configs/scenarios/maya_start.toml --event-catalog configs/events/starter.toml --consequence-catalog configs/consequences/starter.toml --routine-catalog configs/routines/starter.toml
 ```
 
-Maya-specific values live in `configs/scenarios/maya_start.toml`; the core engine and agent model remain reusable for future characters. Event definitions and perceived decision options live in data under `configs/events/`; real outcome definitions live separately under `configs/consequences/`. When an agent scenario is supplied, each weekly simulation snapshot includes the complete serialized `AgentState` plus that week's event occurrences, event selection traces, decisions, score traces, consequence records, and learning records.
+Maya-specific values live in `configs/scenarios/maya_start.toml`; the core engine and agent model remain reusable for future characters. Event definitions and perceived decision options live in data under `configs/events/`; real outcome definitions live separately under `configs/consequences/`; weekly routine profiles live under `configs/routines/`. When an agent scenario is supplied, each weekly simulation snapshot includes the complete serialized `AgentState` plus that week's event occurrences, event selection traces, decisions, score traces, consequence records, learning records, and passive life records.
 
-M1 stores monetary scenario values as quoted decimal strings in TOML, parses them to `Decimal`, and serializes them back to exact strings for future checkpoints and JSON logs. M5 uses the same exact Decimal handling for monetary consequence deltas. Maya is also represented with state-only education, health, mental, personality, finance, memory, and skill components; no employment, memory-learning, relationship-specific, skill-learning, or personality evolution logic runs yet.
+M1 stores monetary scenario values as quoted decimal strings in TOML, parses them to `Decimal`, and serializes them back to exact strings for future checkpoints and JSON logs. M5 uses the same exact Decimal handling for monetary consequence deltas. Maya is also represented with state-only education, health, mental, personality, finance, memory, and skill components; no employment, relationship-specific, skill-learning, education-progress, or personality evolution logic runs yet.
 
 ## Weekly Lifecycle
 
 An agent run starts by seeding a per-run RNG, recording week 0 with the supplied immutable `AgentState`, and then advancing week by week through a small transition pipeline. Transitions receive a `WeeklyContext`, return a new `AgentState` or explicit transition result, and are validated before the next snapshot is recorded. Transitions must not retain run-specific mutable state between runs; durable simulation state belongs in `AgentState` or explicit run context. Later transitions in a week can inspect events, decisions, and consequences produced by earlier transitions.
 
-The default M5 causal order is:
+The default M7 causal order is:
 
 ```text
 scheduled consequences due this week
 memory learning from those scheduled consequences
+passive income, obligations, debt interest, debt payments, and arrears
+routine planning through the Decision Engine
 event selection
 decision selection using current memory
 immediate consequences and newly scheduled delayed effects
 memory learning from immediate consequences
+routine execution and passive routine effects
 ```
 
 ## Event Engine
@@ -72,6 +75,16 @@ Learning is deterministic and state-only. It evaluates actual applied consequenc
 
 The learning transition mutates only `AgentState.memory`. It never fabricates consequences, changes option availability, reads hidden outcome probabilities, sees unexperienced outcome branches, or alters personality, skills, relationships, employment, goals, finances, health, needs, or education directly. Learning records and decision memory evidence make the chain auditable from consequence to memory update to future decision contribution.
 
+## Passive Life & Routine Engine
+
+M7 models the ordinary mechanics of a week. Passive financial life applies income, rent, recurring commitments, debt interest, debt minimum payments, and arrears using exact `Decimal` money. Obligatory shortfalls are audited and can create or reinforce arrears without allowing balances to go negative.
+
+Routine planning creates a normal, auditable weekly routine decision from data-defined routine profiles, using the existing Decision Engine. Routine execution then applies the selected profile's actual passive effects to bounded health, mental, needs, routine, and city-familiarity state. It does not create events, hidden consequences, memories, skills, employment, relationships, or personality evolution.
+
+Special events remain separate: they are stochastic interruptions or opportunities selected by the Event Engine around ordinary life, not replacements for it.
+
+A week in which nothing exceptional happens is still a week of life: Maya still eats, rests, studies, moves around the city, pays bills when due, and carries the effects of tight resources or recovery-focused choices.
+
 ## Test
 
 ```powershell
@@ -85,16 +98,18 @@ ruff check .
 configs/              Example and default configuration files
 configs/consequences/ Consequence catalog files
 configs/events/       Event catalog files
+configs/routines/     Weekly routine profile catalog files
 configs/scenarios/    Agent scenario files
 runs/                 Local simulation outputs; ignored except for .gitkeep
 scripts/              Developer and demo entry-point scripts
 src/lifesim/consequences/ Consequence engine package
 src/lifesim/decisions/ Decision engine package
 src/lifesim/learning/ Memory and learning engine package
+src/lifesim/passive/  Passive life and routine engine package
 src/lifesim/          LifeSim Engine package
 tests/                Pytest suite
 ```
 
 ## Determinism
 
-Simulation runs are seeded from configuration. Each `run()` resets its event RNG from `simulation.seed`, so repeated runs with the same configuration produce the same results. Decision noise and consequence outcome selection use deterministic SHA-256-derived local seeds and do not consume the event-selection RNG stream. Memory formation, reinforcement, decay, and retrieval are deterministic and use no RNG. RNG probes stay in tests rather than domain state.
+Simulation runs are seeded from configuration. Each `run()` resets its event RNG from `simulation.seed`, so repeated runs with the same configuration produce the same results. Decision noise, consequence outcome selection, and passive income reliability use deterministic SHA-256-derived local seeds and do not consume the event-selection RNG stream. Routine execution, memory formation, reinforcement, decay, and retrieval are deterministic and use no RNG. RNG probes stay in tests rather than domain state.

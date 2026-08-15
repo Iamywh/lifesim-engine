@@ -608,8 +608,18 @@ goal_tags = ["health"]
 
     output = json.loads(completed.stdout)
 
-    assert output["states"][1]["decisions"][0]["chosen_option_id"] == "stay"
-    assert output["decision_history"]["records"][0]["source_event_id"] == "cli_decision_event"
+    event_decision = next(
+        decision
+        for decision in output["states"][1]["decisions"]
+        if decision["source_event_id"] == "cli_decision_event"
+    )
+    assert event_decision["chosen_option_id"] == "stay"
+    history_decision = next(
+        decision
+        for decision in output["decision_history"]["records"]
+        if decision["source_event_id"] == "cli_decision_event"
+    )
+    assert history_decision["chosen_option_id"] == "stay"
 
 
 def context(*, week: int = 1, seed: int = 1) -> WeeklyContext:

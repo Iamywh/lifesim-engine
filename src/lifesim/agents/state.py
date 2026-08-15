@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from decimal import Decimal
 from typing import Any
 
@@ -34,12 +34,18 @@ class Debt(SerializableState):
     balance: Decimal
     minimum_payment: Decimal
     interest_rate: Decimal
+    payment_cadence: str = "monthly"
+    due_day: int = 1
+    consecutive_missed_payments: int = 0
 
     def __post_init__(self) -> None:
         _require_non_empty(self.name, "name")
         _require_money(self.balance, "balance")
         _require_money(self.minimum_payment, "minimum_payment")
         _require_rate(self.interest_rate, "interest_rate")
+        _require_cadence(self.payment_cadence, "payment_cadence")
+        _require_day(self.due_day, "due_day")
+        _require_non_negative_integer(self.consecutive_missed_payments, "consecutive_missed_payments")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,12 +54,14 @@ class IncomeStream(SerializableState):
     amount: Decimal
     cadence: str
     reliability: float
+    due_day: int = 1
 
     def __post_init__(self) -> None:
         _require_non_empty(self.name, "name")
         _require_money(self.amount, "amount")
-        _require_non_empty(self.cadence, "cadence")
+        _require_cadence(self.cadence, "cadence")
         _require_bounded(self.reliability, "reliability", minimum=0.0, maximum=1.0)
+        _require_day(self.due_day, "due_day")
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,12 +70,32 @@ class RecurringCommitment(SerializableState):
     amount: Decimal
     cadence: str
     category: str
+    due_day: int = 1
 
     def __post_init__(self) -> None:
         _require_non_empty(self.name, "name")
         _require_money(self.amount, "amount")
-        _require_non_empty(self.cadence, "cadence")
+        _require_cadence(self.cadence, "cadence")
         _require_non_empty(self.category, "category")
+        _require_day(self.due_day, "due_day")
+
+
+@dataclass(frozen=True, slots=True)
+class Arrear(SerializableState):
+    obligation_id: str
+    category: str
+    balance: Decimal
+    first_missed_week: int
+    last_updated_week: int
+    missed_occurrences: int
+
+    def __post_init__(self) -> None:
+        _require_non_empty(self.obligation_id, "obligation_id")
+        _require_non_empty(self.category, "category")
+        _require_money(self.balance, "balance")
+        _require_non_negative_integer(self.first_missed_week, "first_missed_week")
+        _require_non_negative_integer(self.last_updated_week, "last_updated_week")
+        _require_non_negative_integer(self.missed_occurrences, "missed_occurrences")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +108,7 @@ class FinancialState(SerializableState):
     debts: tuple[Debt, ...]
     income_streams: tuple[IncomeStream, ...]
     recurring_commitments: tuple[RecurringCommitment, ...]
+    arrears: tuple[Arrear, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.currency, "currency")
@@ -92,6 +121,7 @@ class FinancialState(SerializableState):
         _freeze_tuple(self, "debts")
         _freeze_tuple(self, "income_streams")
         _freeze_tuple(self, "recurring_commitments")
+        _freeze_tuple(self, "arrears")
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,6 +522,21 @@ class MemoryState(SerializableState):
 
 
 @dataclass(frozen=True, slots=True)
+class RoutineState(SerializableState):
+    current_profile_id: str = "balanced_week"
+    previous_profile_id: str = ""
+    weeks_in_current_profile: int = 0
+    low_social_streak: int = 0
+
+    def __post_init__(self) -> None:
+        _require_non_empty(self.current_profile_id, "current_profile_id")
+        if not isinstance(self.previous_profile_id, str):
+            raise TypeError("Expected 'previous_profile_id' to be a string.")
+        _require_non_negative_integer(self.weeks_in_current_profile, "weeks_in_current_profile")
+        _require_non_negative_integer(self.low_social_streak, "low_social_streak")
+
+
+@dataclass(frozen=True, slots=True)
 class AgentState(SerializableState):
     identity: IdentityState
     financial: FinancialState
@@ -507,6 +552,7 @@ class AgentState(SerializableState):
     habits: HabitsState
     knowledge: KnowledgeState
     memory: MemoryState
+    routine: RoutineState = field(default_factory=RoutineState)
 
 
 PersonState = AgentState
@@ -569,6 +615,19 @@ def _require_non_negative_integer(value: int, name: str) -> None:
         raise TypeError(f"Expected '{name}' to be an integer.")
     if value < 0:
         raise ValueError(f"Expected '{name}' to be non-negative.")
+
+
+def _require_cadence(value: str, name: str) -> None:
+    _require_non_empty(value, name)
+    if value not in {"weekly", "monthly"}:
+        raise ValueError(f"Expected '{name}' to be 'weekly' or 'monthly'.")
+
+
+def _require_day(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"Expected '{name}' to be an integer.")
+    if not 1 <= value <= 31:
+        raise ValueError(f"Expected '{name}' to be between 1 and 31.")
 
 
 def _require_integer(value: int, name: str, *, minimum: int, maximum: int) -> None:

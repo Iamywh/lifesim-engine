@@ -3,6 +3,7 @@
 from lifesim.agents.state import (
     AcuteCondition,
     AgentState,
+    Arrear,
     Debt,
     EducationState,
     EmploymentState,
@@ -26,6 +27,7 @@ from lifesim.agents.state import (
     PersonalityState,
     PersonState,
     RecurringCommitment,
+    RoutineState,
     SkillRating,
     SkillsState,
     SocialConnection,
@@ -36,6 +38,7 @@ from lifesim.agents.state import (
 __all__ = [
     "AcuteCondition",
     "AgentState",
+    "Arrear",
     "Debt",
     "EducationState",
     "EmploymentState",
@@ -59,6 +62,7 @@ __all__ = [
     "PersonState",
     "PersonalityState",
     "RecurringCommitment",
+    "RoutineState",
     "SkillRating",
     "SkillsState",
     "SocialConnection",

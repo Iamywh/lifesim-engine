@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from datetime import date, timedelta
 from random import Random
 from typing import Any, Protocol
 
@@ -18,10 +19,12 @@ class WeeklyContext:
     decisions: tuple[Any, ...] = ()
     consequences: tuple[Any, ...] = ()
     learning_records: tuple[Any, ...] = ()
+    passive_records: tuple[Any, ...] = ()
     event_history: Any | None = None
     decision_history: Any | None = None
     consequence_runtime: Any | None = None
     learning_runtime: Any | None = None
+    passive_runtime: Any | None = None
 
     def __post_init__(self) -> None:
         if self.week < 1:
@@ -30,6 +33,15 @@ class WeeklyContext:
         object.__setattr__(self, "decisions", tuple(self.decisions))
         object.__setattr__(self, "consequences", tuple(self.consequences))
         object.__setattr__(self, "learning_records", tuple(self.learning_records))
+        object.__setattr__(self, "passive_records", tuple(self.passive_records))
+
+    @property
+    def week_start(self) -> date:
+        return self.config.simulation.start_date + timedelta(weeks=self.week - 1)
+
+    @property
+    def week_end(self) -> date:
+        return self.week_start + timedelta(days=6)
 
 
 class WeeklyTransition(Protocol):
@@ -55,10 +67,12 @@ class WeeklyTransitionResult:
     decisions: tuple[Any, ...] = ()
     consequences: tuple[Any, ...] = ()
     learning_records: tuple[Any, ...] = ()
+    passive_records: tuple[Any, ...] = ()
     event_history: Any | None = None
     decision_history: Any | None = None
     consequence_runtime: Any | None = None
     learning_runtime: Any | None = None
+    passive_runtime: Any | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "events", tuple(self.events))
@@ -66,6 +80,7 @@ class WeeklyTransitionResult:
         object.__setattr__(self, "decisions", tuple(self.decisions))
         object.__setattr__(self, "consequences", tuple(self.consequences))
         object.__setattr__(self, "learning_records", tuple(self.learning_records))
+        object.__setattr__(self, "passive_records", tuple(self.passive_records))
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,10 +118,12 @@ class WeeklyPipeline:
         decisions: list[Any] = []
         consequences: list[Any] = []
         learning_records: list[Any] = []
+        passive_records: list[Any] = []
         event_history = context.event_history
         decision_history = context.decision_history
         consequence_runtime = context.consequence_runtime
         learning_runtime = context.learning_runtime
+        passive_runtime = context.passive_runtime
 
         for transition in self._transitions:
             candidate = transition.apply(next_state, context)
@@ -126,6 +143,7 @@ class WeeklyPipeline:
             decisions.extend(result.decisions)
             consequences.extend(result.consequences)
             learning_records.extend(result.learning_records)
+            passive_records.extend(result.passive_records)
             if result.events:
                 context = replace(context, events=tuple(events))
             if result.decisions:
@@ -134,6 +152,8 @@ class WeeklyPipeline:
                 context = replace(context, consequences=tuple(consequences))
             if result.learning_records:
                 context = replace(context, learning_records=tuple(learning_records))
+            if result.passive_records:
+                context = replace(context, passive_records=tuple(passive_records))
             if result.event_history is not None:
                 event_history = result.event_history
                 context = replace(context, event_history=event_history)
@@ -146,6 +166,9 @@ class WeeklyPipeline:
             if result.learning_runtime is not None:
                 learning_runtime = result.learning_runtime
                 context = replace(context, learning_runtime=learning_runtime)
+            if result.passive_runtime is not None:
+                passive_runtime = result.passive_runtime
+                context = replace(context, passive_runtime=passive_runtime)
 
         if next_state is state:
             next_state = replace(state)
@@ -156,8 +179,10 @@ class WeeklyPipeline:
             decisions=tuple(decisions),
             consequences=tuple(consequences),
             learning_records=tuple(learning_records),
+            passive_records=tuple(passive_records),
             event_history=event_history,
             decision_history=decision_history,
             consequence_runtime=consequence_runtime,
             learning_runtime=learning_runtime,
+            passive_runtime=passive_runtime,
         )

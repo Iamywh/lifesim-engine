@@ -20,6 +20,7 @@ class SimulationState:
     decisions: tuple[Any, ...] = ()
     consequences: tuple[Any, ...] = ()
     learning_records: tuple[Any, ...] = ()
+    passive_records: tuple[Any, ...] = ()
 
     def __post_init__(self) -> None:
         if self.week < 0:
@@ -29,6 +30,7 @@ class SimulationState:
         object.__setattr__(self, "decisions", tuple(self.decisions))
         object.__setattr__(self, "consequences", tuple(self.consequences))
         object.__setattr__(self, "learning_records", tuple(self.learning_records))
+        object.__setattr__(self, "passive_records", tuple(self.passive_records))
 
     def to_dict(self) -> dict[str, Any]:
         output = {
@@ -43,6 +45,9 @@ class SimulationState:
             ]
             output["learning_records"] = [
                 record.to_dict() for record in self.learning_records
+            ]
+            output["passive_records"] = [
+                record.to_dict() for record in self.passive_records
             ]
         if self.event_traces:
             output["event_traces"] = [trace.to_dict() for trace in self.event_traces]
@@ -61,6 +66,7 @@ class SimulationResult:
     consequence_history: Any | None = None
     pending_scheduled_effects: tuple[Any, ...] = ()
     learning_history: Any | None = None
+    passive_history: Any | None = None
 
     def __post_init__(self) -> None:
         weeks = tuple(state.week for state in self.states)
@@ -95,6 +101,8 @@ class SimulationResult:
             ]
         if self.learning_history is not None:
             output["learning_history"] = self.learning_history.to_dict()
+        if self.passive_history is not None:
+            output["passive_history"] = self.passive_history.to_dict()
         return output
 
 
@@ -120,6 +128,7 @@ class LifeSimEngine:
         decision_history = None
         consequence_runtime = None
         learning_runtime = None
+        passive_runtime = None
 
         if initial_agent is None:
             for week in range(1, self._config.simulation.duration_weeks + 1):
@@ -142,6 +151,7 @@ class LifeSimEngine:
                     decision_history=decision_history,
                     consequence_runtime=consequence_runtime,
                     learning_runtime=learning_runtime,
+                    passive_runtime=passive_runtime,
                 )
                 transition_result = self._pipeline.advance(previous_agent, context)
                 next_agent = transition_result.agent_state
@@ -153,6 +163,8 @@ class LifeSimEngine:
                     consequence_runtime = transition_result.consequence_runtime
                 if transition_result.learning_runtime is not None:
                     learning_runtime = transition_result.learning_runtime
+                if transition_result.passive_runtime is not None:
+                    passive_runtime = transition_result.passive_runtime
                 states.append(
                     SimulationState(
                         week=week,
@@ -162,6 +174,7 @@ class LifeSimEngine:
                         decisions=transition_result.decisions,
                         consequences=transition_result.consequences,
                         learning_records=transition_result.learning_records,
+                        passive_records=transition_result.passive_records,
                     )
                 )
                 summaries.append(
@@ -181,6 +194,9 @@ class LifeSimEngine:
         learning_history = None
         if learning_runtime is not None:
             learning_history = learning_runtime.history
+        passive_history = None
+        if passive_runtime is not None:
+            passive_history = passive_runtime.history
 
         return SimulationResult(
             name=self._config.simulation.name,
@@ -193,4 +209,5 @@ class LifeSimEngine:
             consequence_history=consequence_history,
             pending_scheduled_effects=pending_scheduled_effects,
             learning_history=learning_history,
+            passive_history=passive_history,
         )

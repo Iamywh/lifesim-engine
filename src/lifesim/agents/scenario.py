@@ -8,6 +8,7 @@ from typing import Any
 from lifesim.agents.state import (
     AcuteCondition,
     AgentState,
+    Arrear,
     Debt,
     EducationState,
     EmploymentState,
@@ -30,6 +31,7 @@ from lifesim.agents.state import (
     NeedsState,
     PersonalityState,
     RecurringCommitment,
+    RoutineState,
     SkillRating,
     SkillsState,
     SocialConnection,
@@ -63,6 +65,7 @@ def parse_agent_state(raw: dict[str, Any]) -> AgentState:
         habits=_parse_habits(_require_section(agent, "habits")),
         knowledge=_parse_knowledge(_require_section(agent, "knowledge")),
         memory=_parse_memory(_require_section(agent, "memory")),
+        routine=RoutineState(**agent.get("routine", {})),
     )
 
 
@@ -83,6 +86,9 @@ def _parse_financial(raw: dict[str, Any]) -> FinancialState:
                 balance=_money(item["balance"], "balance"),
                 minimum_payment=_money(item["minimum_payment"], "minimum_payment"),
                 interest_rate=_money(item["interest_rate"], "interest_rate"),
+                payment_cadence=item.get("payment_cadence", "monthly"),
+                due_day=item.get("due_day", 1),
+                consecutive_missed_payments=item.get("consecutive_missed_payments", 0),
             )
             for item in _raw_items(raw, "debts")
         ),
@@ -92,6 +98,7 @@ def _parse_financial(raw: dict[str, Any]) -> FinancialState:
                 amount=_money(item["amount"], "amount"),
                 cadence=item["cadence"],
                 reliability=item["reliability"],
+                due_day=item.get("due_day", 1),
             )
             for item in _raw_items(raw, "income_streams")
         ),
@@ -101,8 +108,20 @@ def _parse_financial(raw: dict[str, Any]) -> FinancialState:
                 amount=_money(item["amount"], "amount"),
                 cadence=item["cadence"],
                 category=item["category"],
+                due_day=item.get("due_day", 1),
             )
             for item in _raw_items(raw, "recurring_commitments")
+        ),
+        arrears=tuple(
+            Arrear(
+                obligation_id=item["obligation_id"],
+                category=item["category"],
+                balance=_money(item["balance"], "balance"),
+                first_missed_week=item["first_missed_week"],
+                last_updated_week=item["last_updated_week"],
+                missed_occurrences=item["missed_occurrences"],
+            )
+            for item in _raw_items(raw, "arrears")
         ),
     )
 

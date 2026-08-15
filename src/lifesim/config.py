@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ class SimulationConfig:
     name: str
     seed: int
     duration_weeks: int
+    start_date: date = date(2026, 1, 5)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +42,7 @@ def parse_config(raw: dict[str, Any]) -> LifeSimConfig:
             name=_require_str(simulation, "name"),
             seed=_require_int(simulation, "seed", minimum=0),
             duration_weeks=_require_int(simulation, "duration_weeks", minimum=0),
+            start_date=_optional_date(simulation, "start_date", date(2026, 1, 5)),
         ),
         city=CityConfig(
             name=_require_str(city, "name"),
@@ -61,3 +64,15 @@ def _require_str(section: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"Expected non-empty string config value for '{key}'.")
     return value
+
+
+def _optional_date(section: dict[str, Any], key: str, default: date) -> date:
+    value = section.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise TypeError(f"Expected ISO date string config value for '{key}'.")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError(f"Expected ISO date string config value for '{key}'.") from error

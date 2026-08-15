@@ -27,10 +27,19 @@ class DecisionEngine:
         events: tuple[EventOccurrence, ...],
         history: DecisionHistory,
     ) -> DecisionSelectionResult:
+        decided_keys = {
+            (decision.week, decision.source_event_id, decision.source_event_version)
+            for decision in history.records
+        } | {
+            (decision.week, decision.source_event_id, decision.source_event_version)
+            for decision in context.decisions
+            if isinstance(decision, DecisionRecord)
+        }
         records = tuple(
             self.decide_event(state, context, event)
             for event in events
             if event.options
+            and (context.week, event.event_id, event.version) not in decided_keys
         )
         return DecisionSelectionResult(records=records, history=history.record(records))
 
