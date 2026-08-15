@@ -20,30 +20,36 @@ name = "student overdraft"
 balance = "450.00"
 minimum_payment = "25.00"
 interest_rate = "0.00"
+payment_cadence = "monthly"
+due_day = 12
 
 [[agent.financial.income_streams]]
 name = "occasional remote admin shifts"
 amount = "180.00"
 cadence = "monthly"
 reliability = 0.35
+due_day = 7
 
 [[agent.financial.recurring_commitments]]
 name = "shared room rent"
 amount = "520.00"
 cadence = "monthly"
 category = "housing"
+due_day = 1
 
 [[agent.financial.recurring_commitments]]
 name = "public transport pass"
 amount = "49.00"
 cadence = "monthly"
 category = "transport"
+due_day = 3
 
 [[agent.financial.recurring_commitments]]
 name = "phone plan"
 amount = "18.00"
 cadence = "monthly"
 category = "utilities"
+due_day = 10
 
 [agent.health]
 physical_health = 78.0
@@ -204,3 +210,9 @@ episodic_memories = []
 lessons_learned = []
 mistakes = []
 successful_patterns = []
+
+[agent.routine]
+current_profile_id = "balanced_week"
+previous_profile_id = ""
+weeks_in_current_profile = 0
+low_social_streak = 0

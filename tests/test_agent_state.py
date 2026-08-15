@@ -100,6 +100,7 @@ def test_agent_state_serializes_to_checkpoint_ready_dictionary() -> None:
         "debts",
         "income_streams",
         "recurring_commitments",
+        "arrears",
     }
     assert serialized["education"] == {
         "status": "enrolled",

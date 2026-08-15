@@ -17,6 +17,14 @@ from lifesim.engine import LifeSimEngine
 from lifesim.events.catalog import load_event_catalog
 from lifesim.events.engine import EventEngine, EventEngineTransition
 from lifesim.learning.engine import LearningEngine, LearningTransition
+from lifesim.passive.catalog import load_routine_catalog
+from lifesim.passive.engine import (
+    PassiveCashflowEngine,
+    PassiveCashflowTransition,
+    RoutineEngine,
+    RoutineExecutionTransition,
+    RoutinePlanningTransition,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,6 +52,12 @@ def parse_args() -> argparse.Namespace:
         default=Path("configs/consequences/starter.toml"),
         help="Path to a consequence catalog TOML file used when an agent scenario is supplied.",
     )
+    parser.add_argument(
+        "--routine-catalog",
+        type=Path,
+        default=Path("configs/routines/starter.toml"),
+        help="Path to a routine catalog TOML file used when an agent scenario is supplied.",
+    )
     return parser.parse_args()
 
 
@@ -61,13 +75,18 @@ def main() -> None:
         )
         consequence_engine = ConsequenceEngine(consequence_catalog)
         learning_engine = LearningEngine()
+        routine_engine = RoutineEngine(load_routine_catalog(args.routine_catalog))
+        decision_engine = DecisionEngine()
         transitions = (
             ScheduledConsequenceTransition(consequence_engine),
             LearningTransition(learning_engine),
+            PassiveCashflowTransition(PassiveCashflowEngine()),
+            RoutinePlanningTransition(routine_engine, decision_engine),
             EventEngineTransition(EventEngine(event_catalog)),
-            DecisionEngineTransition(DecisionEngine()),
+            DecisionEngineTransition(decision_engine),
             DecisionConsequenceTransition(consequence_engine),
             LearningTransition(learning_engine),
+            RoutineExecutionTransition(routine_engine),
         )
     engine = LifeSimEngine(config, transitions=transitions)
     result = engine.run(initial_agent=initial_agent)

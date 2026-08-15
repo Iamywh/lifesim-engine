@@ -27,10 +27,19 @@ class DecisionEngine:
         events: tuple[EventOccurrence, ...],
         history: DecisionHistory,
     ) -> DecisionSelectionResult:
+        decided_keys = {
+            (decision.week, decision.source_event_id, decision.source_event_version)
+            for decision in history.records
+        } | {
+            (decision.week, decision.source_event_id, decision.source_event_version)
+            for decision in context.decisions
+            if isinstance(decision, DecisionRecord)
+        }
         records = tuple(
             self.decide_event(state, context, event)
             for event in events
             if event.options
+            and (context.week, event.event_id, event.version) not in decided_keys
         )
         return DecisionSelectionResult(records=records, history=history.record(records))
 
@@ -136,7 +145,11 @@ def _unavailable_reason(
     for condition in option.availability_conditions:
         if not condition.evaluate(state, context):
             return "availability_conditions"
-    if option.estimated_cost > _liquid_resources(state) and option.estimated_cost > Decimal(0):
+    if (
+        option.requires_full_estimated_cost
+        and option.estimated_cost > _liquid_resources(state)
+        and option.estimated_cost > Decimal(0)
+    ):
         return "insufficient_liquid_resources"
     return ""
 

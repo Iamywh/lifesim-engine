@@ -240,9 +240,10 @@ def test_demo_cli_agent_scenario_outputs_weekly_maya_snapshots() -> None:
     assert [state["week"] for state in output["states"]] == [0, 1, 2, 3, 4, 5]
     assert output["states"][0]["agent"]["identity"]["agent_id"] == "maya"
     assert output["states"][-1]["agent"]["financial"]["cash"] == "180.00"
+    assert output["states"][-1]["passive_records"]
     assert output["summaries"][-1] == {
         "agent_id": "maya",
-        "state_changed": False,
+        "state_changed": True,
         "week": 5,
     }
 

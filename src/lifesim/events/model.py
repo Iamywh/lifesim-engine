@@ -91,6 +91,7 @@ class EventOption(SerializableState):
     summary: str
     availability_conditions: tuple[EventCondition, ...] = ()
     estimated_cost: Decimal = Decimal("0.00")
+    requires_full_estimated_cost: bool = True
     time_cost_hours: float = 0.0
     energy_cost: float = 0.0
     short_term_value: float = 0.0
@@ -115,6 +116,8 @@ class EventOption(SerializableState):
             _typed_tuple(self.availability_conditions, EventCondition, "availability_conditions"),
         )
         _money(self.estimated_cost, "estimated_cost")
+        if not isinstance(self.requires_full_estimated_cost, bool):
+            raise TypeError("Expected requires_full_estimated_cost to be bool.")
         object.__setattr__(
             self,
             "time_cost_hours",
