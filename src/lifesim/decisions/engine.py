@@ -145,7 +145,11 @@ def _unavailable_reason(
     for condition in option.availability_conditions:
         if not condition.evaluate(state, context):
             return "availability_conditions"
-    if option.estimated_cost > _liquid_resources(state) and option.estimated_cost > Decimal(0):
+    if (
+        option.requires_full_estimated_cost
+        and option.estimated_cost > _liquid_resources(state)
+        and option.estimated_cost > Decimal(0)
+    ):
         return "insufficient_liquid_resources"
     return ""
 

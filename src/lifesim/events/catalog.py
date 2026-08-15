@@ -91,6 +91,7 @@ def _parse_option(raw: dict[str, Any]) -> EventOption:
             _parse_condition(item) for item in raw.get("availability_conditions", [])
         ),
         estimated_cost=_money(raw.get("estimated_cost", "0.00"), "estimated_cost"),
+        requires_full_estimated_cost=raw.get("requires_full_estimated_cost", True),
         time_cost_hours=raw["time_cost_hours"],
         energy_cost=raw["energy_cost"],
         short_term_value=raw["short_term_value"],

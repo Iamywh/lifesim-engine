@@ -44,6 +44,7 @@ def _parse_profile(raw: dict[str, Any]) -> RoutineProfile:
         comfort_value=raw.get("comfort_value", 0.0),
         goal_tags=tuple(raw.get("goal_tags", ())),
         food_budget=_money(raw, "food_budget"),
+        minimum_food_budget=_money(raw, "minimum_food_budget", default=raw.get("food_budget")),
         transport_budget=_money(raw, "transport_budget"),
         discretionary_budget=_money(raw, "discretionary_budget"),
         social_contact=raw.get("social_contact", 0.0),
@@ -59,8 +60,8 @@ def _required(raw: dict[str, Any], key: str) -> str:
     return value
 
 
-def _money(raw: dict[str, Any], key: str) -> Decimal:
-    value = raw.get(key)
+def _money(raw: dict[str, Any], key: str, *, default: Any = None) -> Decimal:
+    value = raw.get(key, default)
     if not isinstance(value, str):
         raise TypeError(f"Expected routine monetary value '{key}' to be a string.")
     try:

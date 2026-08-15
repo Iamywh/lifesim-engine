@@ -41,8 +41,11 @@ class PassiveCashflowEngine:
         context: WeeklyContext,
         runtime: PassiveLifeRuntimeState,
     ) -> tuple[AgentState, PassiveLifeRuntimeState, CashflowRecord]:
+        if context.week in runtime.processed_cashflow_weeks:
+            raise ValueError(f"Passive cashflow already processed for week {context.week}.")
         next_state = state
         entries: list[CashflowEntry] = []
+        effects: list[RoutineEffectApplication] = []
 
         for stream in state.financial.income_streams:
             due_date = _due_date(stream.cadence, stream.due_day, context.week_start, context.week_end)
@@ -78,7 +81,7 @@ class PassiveCashflowEngine:
             due_date = _due_date(commitment.cadence, commitment.due_day, context.week_start, context.week_end)
             if due_date is None:
                 continue
-            next_state, entry = _pay_obligation(
+            next_state, entry, obligation_effects = _pay_obligation(
                 next_state,
                 obligation_id=f"commitment:{commitment.name}",
                 name=commitment.name,
@@ -90,17 +93,24 @@ class PassiveCashflowEngine:
                 kind="commitment",
             )
             entries.append(entry)
+            effects.extend(obligation_effects)
 
-        next_state, debt_entries = _process_debts(next_state, context)
+        next_state, debt_entries, debt_effects = _process_debts(next_state, context)
         entries.extend(debt_entries)
+        effects.extend(debt_effects)
 
         record = CashflowRecord(
             week=context.week,
             week_start=context.week_start.isoformat(),
             week_end=context.week_end.isoformat(),
             entries=tuple(entries),
+            effects=tuple(effects),
         )
-        runtime = replace(runtime, history=runtime.history.record_cashflow(record))
+        runtime = replace(
+            runtime,
+            history=runtime.history.record_cashflow(record),
+            processed_cashflow_weeks=runtime.processed_cashflow_weeks + (context.week,),
+        )
         return next_state, runtime, record
 
 
@@ -120,14 +130,22 @@ class RoutineEngine:
         decision_engine: DecisionEngine,
         history: DecisionHistory,
     ) -> tuple[PassiveLifeRuntimeState, EventOccurrence, DecisionHistory, Any]:
+        if context.week in runtime.processed_routine_planning_weeks:
+            raise ValueError(f"Routine planning already processed for week {context.week}.")
         occurrence = _routine_occurrence(context, self._catalog)
         decision = decision_engine.decide_event(state, context, occurrence)
         next_history = history.record((decision,))
-        profile_id = decision.chosen_option_id or state.routine.current_profile_id
+        if decision.chosen_option_id is None:
+            raise ValueError("Expected routine planning to choose an available routine profile.")
+        profile_id = decision.chosen_option_id
         runtime = replace(
             runtime,
             planned_routine_profile_id=profile_id,
             planned_routine_decision=decision,
+            planned_routine_week=context.week,
+            processed_routine_planning_weeks=(
+                runtime.processed_routine_planning_weeks + (context.week,)
+            ),
         )
         return runtime, occurrence, next_history, decision
 
@@ -137,7 +155,13 @@ class RoutineEngine:
         context: WeeklyContext,
         runtime: PassiveLifeRuntimeState,
     ) -> tuple[AgentState, PassiveLifeRuntimeState, RoutineWeekRecord]:
-        profile_id = runtime.planned_routine_profile_id or state.routine.current_profile_id
+        if context.week in runtime.processed_routine_execution_weeks:
+            raise ValueError(f"Routine execution already processed for week {context.week}.")
+        if runtime.planned_routine_week != context.week:
+            raise ValueError("Expected planned routine week to match execution week.")
+        profile_id = runtime.planned_routine_profile_id
+        if not profile_id:
+            raise ValueError("Expected planned routine profile before routine execution.")
         profile = self._catalog.get(profile_id)
         decision = runtime.planned_routine_decision
         if decision is None:
@@ -179,6 +203,10 @@ class RoutineEngine:
             history=runtime.history.record_routine(record),
             planned_routine_profile_id="",
             planned_routine_decision=None,
+            planned_routine_week=None,
+            processed_routine_execution_weeks=(
+                runtime.processed_routine_execution_weeks + (context.week,)
+            ),
         )
         return next_state, runtime, record
 
@@ -281,15 +309,17 @@ def _profile_option(profile: RoutineProfile) -> EventOption:
         health_value=profile.health_value,
         comfort_value=profile.comfort_value,
         goal_tags=profile.goal_tags,
+        requires_full_estimated_cost=False,
     )
 
 
 def _process_debts(
     state: AgentState,
     context: WeeklyContext,
-) -> tuple[AgentState, tuple[CashflowEntry, ...]]:
+) -> tuple[AgentState, tuple[CashflowEntry, ...], tuple[RoutineEffectApplication, ...]]:
     debts: list[Debt] = []
     entries: list[CashflowEntry] = []
+    effects: list[RoutineEffectApplication] = []
     next_state = state
     for debt in state.financial.debts:
         updated = debt
@@ -312,7 +342,7 @@ def _process_debts(
         if due_date is not None and updated.balance > Decimal(0) and updated.minimum_payment > Decimal(0):
             amount = min(updated.minimum_payment, updated.balance)
             next_state = replace(next_state, financial=replace(next_state.financial, debts=tuple(debts + [updated] + list(state.financial.debts[len(debts) + 1:]))))
-            next_state, entry = _pay_obligation(
+            next_state, entry, obligation_effects = _pay_obligation(
                 next_state,
                 obligation_id=f"debt:{updated.name}",
                 name=updated.name,
@@ -323,6 +353,7 @@ def _process_debts(
                 context=context,
                 kind="debt_payment",
             )
+            effects.extend(obligation_effects)
             paid_amount = entry.amount_paid
             missed = paid_amount < amount
             updated = replace(
@@ -335,7 +366,7 @@ def _process_debts(
             entries.append(entry)
         debts.append(updated)
     next_state = replace(next_state, financial=replace(next_state.financial, debts=tuple(debts)))
-    return next_state, tuple(entries)
+    return next_state, tuple(entries), tuple(effects)
 
 
 def _pay_obligation(
@@ -349,17 +380,18 @@ def _pay_obligation(
     due_date: date,
     context: WeeklyContext,
     kind: str,
-) -> tuple[AgentState, CashflowEntry]:
+) -> tuple[AgentState, CashflowEntry, tuple[RoutineEffectApplication, ...]]:
     financial, paid, transfers = _fund_payment(state.financial, amount)
     unpaid = _money(amount - paid)
     arrear_balance = None
+    effects: tuple[RoutineEffectApplication, ...] = ()
     if unpaid > Decimal(0):
         financial = _upsert_arrear(financial, obligation_id, category, unpaid, context.week)
         arrear = _find_arrear(financial, obligation_id)
         arrear_balance = arrear.balance if arrear is not None else unpaid
     next_state = replace(state, financial=financial)
     if unpaid > Decimal(0):
-        next_state = _apply_unpaid_pressure(next_state, category, unpaid, amount)
+        next_state, effects = _apply_unpaid_pressure(next_state, category, unpaid, amount, obligation_id)
     entry = CashflowEntry(
         entry_id=f"{kind}:{name}:{due_date.isoformat()}",
         kind=kind,
@@ -372,7 +404,7 @@ def _pay_obligation(
         funding=transfers,
         arrear_balance_after=arrear_balance,
     )
-    return next_state, entry
+    return next_state, entry, effects
 
 
 def _fund_payment(
@@ -418,13 +450,16 @@ def _apply_routine_spending(
         financial, paid, transfers = _fund_payment(next_state.financial, amount)
         next_state = replace(next_state, financial=financial)
         if category == "food" and paid < amount:
-            next_state, effect = _bounded_replace(
-                next_state,
-                "needs.food_security",
-                -(float((amount - paid) / Decimal(10))),
-                "food_shortfall",
-            )
-            effects.append(effect)
+            minimum_shortfall = max(Decimal("0.00"), _money(profile.minimum_food_budget - paid))
+            if minimum_shortfall > Decimal(0):
+                next_state, effect = _bounded_replace(
+                    next_state,
+                    "needs.food_security",
+                    -(float(minimum_shortfall / Decimal(10))),
+                    "food_shortfall",
+                    source=f"routine_food:{profile.profile_id}:{context.week}",
+                )
+                effects.append(effect)
         entries.append(
             CashflowEntry(
                 entry_id=f"{kind}:{profile.profile_id}:{context.week}",
@@ -449,7 +484,14 @@ def _apply_routine_effects(
     next_state = state
     effects: list[RoutineEffectApplication] = []
     social_need = state.personality.social_need
-    isolation_pressure = max(0.0, 0.35 - profile.social_contact) * social_need * min(1.0, low_social_streak / 6)
+    isolation_pressure = max(0.0, 0.35 - profile.social_contact) * social_need * min(
+        1.0,
+        low_social_streak / 6,
+    )
+    loneliness_pressure = state.mental.loneliness / 100.0 * social_need * min(
+        1.0,
+        low_social_streak / 8,
+    )
     changes = (
         ("health.energy", profile.recovery_intensity * 8.0 - profile.energy_cost * 0.22 - profile.physical_activity * 3.0, "routine_energy"),
         ("health.sleep_debt", -(profile.recovery_intensity * 1.2) + max(0.0, profile.energy_cost - 25.0) / 80.0, "routine_sleep"),
@@ -457,7 +499,15 @@ def _apply_routine_effects(
         ("health.mobility", profile.physical_activity * 0.8, "routine_activity"),
         ("mental.loneliness", (0.35 - profile.social_contact) * 7.0 * social_need - profile.social_contact * 4.5, "routine_social_contact"),
         ("needs.belonging", profile.social_contact * 4.0 - isolation_pressure * 8.0, "routine_belonging"),
-        ("mental.mood", profile.comfort_value * 1.8 + profile.social_contact * 1.6 - isolation_pressure * 3.0, "routine_mood"),
+        (
+            "mental.mood",
+            profile.comfort_value * 1.8
+            + profile.recovery_intensity * 0.9
+            + profile.social_contact * 1.6
+            - isolation_pressure * 3.0
+            - loneliness_pressure * 2.4,
+            "routine_mood",
+        ),
         (
             "mental.stress",
             -profile.recovery_intensity * 3.0
@@ -469,7 +519,13 @@ def _apply_routine_effects(
         ("social.city_familiarity", profile.physical_activity * 0.8 + profile.social_contact * 0.6, "routine_city"),
     )
     for path, delta, reason in changes:
-        next_state, effect = _bounded_replace(next_state, path, float(delta), reason)
+        next_state, effect = _bounded_replace(
+            next_state,
+            path,
+            float(delta),
+            reason,
+            source=f"routine:{profile.profile_id}",
+        )
         effects.append(effect)
     return next_state, tuple(effects)
 
@@ -479,6 +535,8 @@ def _bounded_replace(
     path: str,
     delta: float,
     reason: str,
+    *,
+    source: str = "",
 ) -> tuple[AgentState, RoutineEffectApplication]:
     section_name, field_name = path.split(".", 1)
     section = getattr(state, section_name)
@@ -497,6 +555,7 @@ def _bounded_replace(
         delta=after - before,
         clamped=clamped,
         reason=reason,
+        source=source,
     )
 
 
@@ -505,15 +564,38 @@ def _apply_unpaid_pressure(
     category: str,
     unpaid: Decimal,
     amount: Decimal,
-) -> AgentState:
+    source: str,
+) -> tuple[AgentState, tuple[RoutineEffectApplication, ...]]:
     ratio = float(unpaid / amount) if amount > Decimal(0) else 0.0
     next_state = state
-    next_state, _ = _bounded_replace(next_state, "mental.stress", ratio * 2.0, "unpaid_obligation")
+    effects: list[RoutineEffectApplication] = []
+    next_state, effect = _bounded_replace(
+        next_state,
+        "mental.stress",
+        ratio * 2.0,
+        "unpaid_obligation",
+        source=source,
+    )
+    effects.append(effect)
     if category == "housing":
-        next_state, _ = _bounded_replace(next_state, "needs.housing_security", -ratio * 2.5, "housing_arrear")
+        next_state, effect = _bounded_replace(
+            next_state,
+            "needs.housing_security",
+            -ratio * 2.5,
+            "housing_arrear",
+            source=source,
+        )
+        effects.append(effect)
     if category == "food":
-        next_state, _ = _bounded_replace(next_state, "needs.food_security", -ratio * 2.5, "food_arrear")
-    return next_state
+        next_state, effect = _bounded_replace(
+            next_state,
+            "needs.food_security",
+            -ratio * 2.5,
+            "food_arrear",
+            source=source,
+        )
+        effects.append(effect)
+    return next_state, tuple(effects)
 
 
 def _upsert_arrear(

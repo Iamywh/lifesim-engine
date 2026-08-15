@@ -8,6 +8,8 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from lifesim.agents.scenario import load_agent_state
 from lifesim.agents.state import (
     Debt,
@@ -40,11 +42,13 @@ from lifesim.events import (
     EventEngine,
     EventEngineTransition,
     EventOption,
+    parse_event_catalog,
 )
 from lifesim.passive import (
     PassiveCashflowEngine,
     PassiveCashflowTransition,
     PassiveLifeRuntimeState,
+    RoutineCatalog,
     RoutineEngine,
     RoutineExecutionTransition,
     RoutinePlanningTransition,
@@ -73,6 +77,7 @@ def test_routine_catalog_validation_and_decimal_money() -> None:
     catalog = load_routine_catalog(ROUTINES)
 
     assert catalog.get("balanced_week").food_budget == Decimal("55.00")
+    assert catalog.get("balanced_week").minimum_food_budget == Decimal("38.00")
     try:
         parse_routine_catalog(
             {
@@ -95,6 +100,127 @@ def test_routine_catalog_validation_and_decimal_money() -> None:
         assert "social_contact" in str(error)
     else:  # pragma: no cover
         raise AssertionError("Expected invalid routine range to fail.")
+
+    bad_food = routine_raw("bad_food")
+    bad_food["minimum_food_budget"] = "6.00"
+    bad_food["food_budget"] = "5.00"
+    with pytest.raises(ValueError, match="minimum_food_budget"):
+        parse_routine_catalog({"profiles": [bad_food]})
+
+
+def test_ordinary_event_cost_gate_remains_all_or_nothing_by_default() -> None:
+    maya = with_financial(bank=Decimal("0.00"))
+    parsed = parse_event_catalog(
+        {
+            "events": [
+                {
+                    "event_id": "parsed",
+                    "version": "1",
+                    "category": "test",
+                    "base_weight": 1.0,
+                    "title": "Parsed",
+                    "summary": "Parsed event.",
+                    "options": [
+                        {
+                            "option_id": "partial",
+                            "label": "Partial",
+                            "summary": "Partial option.",
+                            "estimated_cost": "1.00",
+                            "requires_full_estimated_cost": False,
+                            "time_cost_hours": 0.0,
+                            "energy_cost": 0.0,
+                            "short_term_value": 0.0,
+                            "future_value": 0.0,
+                            "perceived_risk": 0.0,
+                            "uncertainty": 0.0,
+                            "social_value": 0.0,
+                            "social_pressure": 0.0,
+                            "autonomy_value": 0.0,
+                            "learning_value": 0.0,
+                            "health_value": 0.0,
+                            "comfort_value": 0.0,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    occurrence = event_definition(
+        EventOption(
+            option_id="expensive",
+            label="Expensive",
+            summary="Requires full payment.",
+            estimated_cost=Decimal("1.00"),
+            short_term_value=1.0,
+        )
+    ).to_occurrence(week=1, effective_weight=1.0)
+
+    assert parsed.definitions[0].options[0].requires_full_estimated_cost is False
+    assert EventOption("default", "Default", "Default.").requires_full_estimated_cost is True
+    decision = DecisionEngine().decide_event(maya, context(), occurrence)
+
+    assert decision.chosen_option_id is None
+    assert decision.unavailable_option_ids == ("expensive",)
+    assert decision.evaluations[0].unavailable_reason == "insufficient_liquid_resources"
+
+
+def test_routine_options_remain_evaluable_under_scarcity_and_choose_real_profile() -> None:
+    broke = with_financial(bank=Decimal("0.00"))
+    engine = RoutineEngine(load_routine_catalog(ROUTINES))
+
+    runtime, occurrence, _, decision = engine.plan(
+        broke,
+        context(),
+        PassiveLifeRuntimeState(),
+        DecisionEngine(),
+        DecisionHistory(),
+    )
+
+    assert all(option.requires_full_estimated_cost is False for option in occurrence.options)
+    assert decision.chosen_option_id is not None
+    assert runtime.planned_routine_profile_id == decision.chosen_option_id
+    assert set(decision.available_option_ids) == {
+        "balanced_week",
+        "austerity_home_week",
+        "low_cost_active_week",
+        "recovery_focus_week",
+        "social_week",
+    }
+
+
+def test_scarcity_can_make_lower_cost_routines_score_relatively_better() -> None:
+    scarce = with_financial(bank=Decimal("40.00"))
+    engine = RoutineEngine(load_routine_catalog(ROUTINES))
+    _, _, _, decision = engine.plan(
+        scarce,
+        context(),
+        PassiveLifeRuntimeState(),
+        DecisionEngine(),
+        DecisionHistory(),
+    )
+
+    scores = {evaluation.option_id: evaluation for evaluation in decision.evaluations}
+    assert scores["austerity_home_week"].available is True
+    assert scores["social_week"].available is True
+    austerity_cost = component(
+        scores["austerity_home_week"],
+        "financial_cost",
+    ).contribution
+    social_cost = component(scores["social_week"], "financial_cost").contribution
+    assert austerity_cost > social_cost
+
+
+def test_routine_planning_rejects_missing_choice_instead_of_falling_back() -> None:
+    engine = RoutineEngine(RoutineCatalog(()))
+
+    with pytest.raises(ValueError, match="choose an available routine profile"):
+        engine.plan(
+            load_agent_state(MAYA_SCENARIO),
+            context(),
+            PassiveLifeRuntimeState(),
+            DecisionEngine(),
+            DecisionHistory(),
+        )
 
 
 def test_weekly_and_monthly_cadence_use_calendar_months() -> None:
@@ -253,6 +379,28 @@ def test_single_home_week_not_harmful_but_repeated_low_social_weeks_accumulate_l
     assert repeated.needs.belonging < one_week.needs.belonging
 
 
+def test_accumulated_isolation_can_create_negative_mood_pressure_without_cliff() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    strained = replace(
+        maya,
+        mental=replace(maya.mental, loneliness=90.0),
+        personality=replace(maya.personality, social_need=1.0),
+        routine=replace(maya.routine, low_social_streak=8),
+    )
+
+    first_week, _, first_record = execute_profile(maya, "austerity_home_week")
+    strained_week, _, strained_record = execute_profile(strained, "austerity_home_week")
+
+    first_mood = next(effect for effect in first_record.effects if effect.path == "mental.mood")
+    strained_mood = next(effect for effect in strained_record.effects if effect.path == "mental.mood")
+
+    assert first_week.mental.mood >= maya.mental.mood
+    assert first_mood.delta > 0
+    assert strained_mood.delta < 0
+    assert strained_week.mental.mood < strained.mental.mood
+    assert strained_week.mental.loneliness > strained.mental.loneliness
+
+
 def test_recovery_social_and_active_profiles_have_expected_tradeoffs() -> None:
     maya = load_agent_state(MAYA_SCENARIO)
     depleted = replace(
@@ -283,6 +431,152 @@ def test_routine_spending_cannot_make_money_negative_and_food_shortfall_is_audit
     assert next_state.financial.emergency_fund == Decimal("0.00")
     assert record.spending[0].amount_paid == Decimal("10.00")
     assert any(effect.reason == "food_shortfall" for effect in record.effects)
+
+
+def test_food_security_uses_minimum_adequate_food_not_full_planned_food_budget() -> None:
+    maya = with_financial(bank=Decimal("38.00"))
+
+    next_state, _, record = execute_profile(maya, "social_week")
+
+    assert record.spending[0].amount_due == Decimal("58.00")
+    assert record.spending[0].amount_paid == Decimal("38.00")
+    assert next_state.needs.food_security == maya.needs.food_security
+    assert not any(effect.reason == "food_shortfall" for effect in record.effects)
+
+
+def test_food_security_penalty_scales_with_minimum_shortfall_without_negative_balances() -> None:
+    low_food, _, low_record = execute_profile(with_financial(bank=Decimal("10.00")), "social_week")
+    less_low_food, _, less_low_record = execute_profile(
+        with_financial(bank=Decimal("28.00")),
+        "social_week",
+    )
+
+    low_penalty = next(effect for effect in low_record.effects if effect.reason == "food_shortfall")
+    less_low_penalty = next(
+        effect for effect in less_low_record.effects if effect.reason == "food_shortfall"
+    )
+
+    assert low_penalty.delta == pytest.approx(-2.8)
+    assert less_low_penalty.delta == pytest.approx(-1.0)
+    assert low_food.needs.food_security < less_low_food.needs.food_security
+    for state in (low_food, less_low_food):
+        assert state.financial.cash == Decimal("0.00")
+        assert state.financial.bank_balance == Decimal("0.00")
+        assert state.financial.savings == Decimal("0.00")
+        assert state.financial.emergency_fund == Decimal("0.00")
+
+
+def test_passive_cashflow_transition_fails_if_processed_twice_for_same_week() -> None:
+    maya = with_financial(
+        bank=Decimal("100.00"),
+        commitments=(RecurringCommitment("rent", Decimal("20.00"), "weekly", "housing"),),
+    )
+    transition = PassiveCashflowTransition(PassiveCashflowEngine())
+    first = transition.apply(maya, context())
+
+    with pytest.raises(ValueError, match="already processed"):
+        transition.apply(first.agent_state, replace(context(), passive_runtime=first.passive_runtime))
+
+
+def test_routine_planning_and_execution_fail_if_processed_twice_for_same_week() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    routine_engine = RoutineEngine(load_routine_catalog(ROUTINES))
+    planning = RoutinePlanningTransition(routine_engine, DecisionEngine())
+    execution = RoutineExecutionTransition(routine_engine)
+    planned = planning.apply(maya, context())
+
+    with pytest.raises(ValueError, match="already processed"):
+        planning.apply(maya, replace(context(), passive_runtime=planned.passive_runtime))
+
+    executed = execution.apply(maya, replace(context(), passive_runtime=planned.passive_runtime))
+    with pytest.raises(ValueError, match="already processed"):
+        execution.apply(
+            executed.agent_state,
+            replace(context(), passive_runtime=executed.passive_runtime),
+        )
+
+
+def test_passive_history_rejects_duplicate_weeks_and_runtime_inconsistency() -> None:
+    _, runtime, record = run_cashflow(
+        with_financial(
+            bank=Decimal("10.00"),
+            commitments=(RecurringCommitment("rent", Decimal("20.00"), "weekly", "housing"),),
+        ),
+        context(),
+    )
+
+    with pytest.raises(ValueError, match="cashflow week"):
+        runtime.history.record_cashflow(record)
+    with pytest.raises(ValueError, match="marked processed"):
+        PassiveLifeRuntimeState(history=runtime.history)
+
+
+def test_missed_obligation_audits_state_effects_and_reconciles_funding() -> None:
+    maya = with_financial(
+        bank=Decimal("30.00"),
+        commitments=(RecurringCommitment("rent", Decimal("100.00"), "weekly", "housing"),),
+    )
+
+    next_state, _, record = run_cashflow(maya, context())
+
+    entry = record.entries[0]
+    assert entry.arrear_balance_after == Decimal("70.00")
+    assert entry.funding[0].amount == Decimal("30.00")
+    assert {effect.path for effect in record.effects} == {
+        "mental.stress",
+        "needs.housing_security",
+    }
+    assert {effect.source for effect in record.effects} == {"commitment:rent"}
+    assert next_state.mental.stress > maya.mental.stress
+    assert next_state.needs.housing_security < maya.needs.housing_security
+
+
+def test_passive_audit_invariants_reject_contradictory_records() -> None:
+    from lifesim.passive import CashflowEntry, FundingTransfer, RoutineEffectApplication
+
+    with pytest.raises(ValueError, match="funding transfer total"):
+        CashflowEntry(
+            entry_id="bad",
+            kind="commitment",
+            name="bad",
+            amount_due=Decimal("10.00"),
+            amount_paid=Decimal("5.00"),
+            cadence="weekly",
+            due_date="2026-01-05",
+            paid=False,
+            funding=(FundingTransfer("bank_balance", Decimal("4.00")),),
+        )
+    with pytest.raises(ValueError, match="outflow amount_paid"):
+        CashflowEntry(
+            entry_id="overpay",
+            kind="commitment",
+            name="overpay",
+            amount_due=Decimal("10.00"),
+            amount_paid=Decimal("11.00"),
+            cadence="weekly",
+            due_date="2026-01-05",
+            paid=True,
+        )
+    with pytest.raises(ValueError, match="paid flag"):
+        CashflowEntry(
+            entry_id="bad_paid",
+            kind="commitment",
+            name="bad paid",
+            amount_due=Decimal("10.00"),
+            amount_paid=Decimal("5.00"),
+            cadence="weekly",
+            due_date="2026-01-05",
+            paid=True,
+        )
+    with pytest.raises(ValueError, match="delta"):
+        RoutineEffectApplication(
+            path="mental.stress",
+            before=10.0,
+            after=12.0,
+            delta=3.0,
+            clamped=False,
+            reason="bad_delta",
+        )
 
 
 def test_no_event_week_still_produces_ordinary_life_changes_and_repeated_runs_match() -> None:
@@ -381,6 +675,61 @@ def test_m5_outcome_rng_isolation_with_routine_enabled() -> None:
     assert routine_consequence == base_consequence
 
 
+def test_probabilistic_passive_income_rng_isolated_from_event_decision_and_consequence_rng() -> None:
+    base_state = with_financial(bank=Decimal("100.00"))
+    income_state = with_financial(
+        bank=Decimal("100.00"),
+        income_streams=(IncomeStream("zero gig", Decimal("0.00"), "weekly", 0.5),),
+    )
+    consequence = ConsequenceCatalog(
+        (
+            OptionConsequenceDefinition(
+                event_id="choice_event",
+                event_version="1",
+                option_id="chosen",
+                outcomes=(
+                    OutcomeDefinition(
+                        "normal",
+                        0.55,
+                        effects=(StateEffectDefinition(path="mental.stress", delta=1.0),),
+                    ),
+                    OutcomeDefinition(
+                        "hard",
+                        0.45,
+                        effects=(StateEffectDefinition(path="mental.stress", delta=6.0),),
+                    ),
+                ),
+            ),
+        )
+    )
+    base = LifeSimEngine(
+        config(duration_weeks=1, seed=33),
+        transitions=(
+            EventEngineTransition(EventEngine(event_catalog())),
+            DecisionEngineTransition(DecisionEngine()),
+            DecisionConsequenceTransition(ConsequenceEngine(consequence)),
+        ),
+    ).run(initial_agent=base_state)
+    with_income = LifeSimEngine(
+        config(duration_weeks=1, seed=33),
+        transitions=(
+            PassiveCashflowTransition(PassiveCashflowEngine()),
+            EventEngineTransition(EventEngine(event_catalog())),
+            DecisionEngineTransition(DecisionEngine()),
+            DecisionConsequenceTransition(ConsequenceEngine(consequence)),
+        ),
+    ).run(initial_agent=income_state)
+
+    assert with_income.states[1].passive_records[0].entries[0].roll is not None
+    assert base.states[1].event_traces[0].to_dict() == with_income.states[1].event_traces[0].to_dict()
+    base_decision = base.states[1].decisions[0]
+    income_decision = with_income.states[1].decisions[0]
+    assert base_decision.evaluations[0].controlled_noise == (
+        income_decision.evaluations[0].controlled_noise
+    )
+    assert base.states[1].consequences[0].to_dict() == with_income.states[1].consequences[0].to_dict()
+
+
 def test_cli_demo_exposes_passive_audit_json() -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
@@ -430,6 +779,8 @@ def execute_profile(state, profile_id: str):
     runtime = PassiveLifeRuntimeState(
         planned_routine_profile_id=profile.profile_id,
         planned_routine_decision=routine_decision(profile.profile_id),
+        planned_routine_week=1,
+        processed_routine_planning_weeks=(1,),
     )
     return engine.execute(state, context(), runtime)
 
@@ -498,7 +849,7 @@ def event_catalog() -> EventCatalog:
     return EventCatalog((event_definition(),), event_probability=1.0)
 
 
-def event_definition() -> EventDefinition:
+def event_definition(*options: EventOption) -> EventDefinition:
     return EventDefinition(
         event_id="choice_event",
         version="1",
@@ -510,7 +861,8 @@ def event_definition() -> EventDefinition:
         tags=("test",),
         title="Choice event",
         summary="A deterministic event.",
-        options=(
+        options=options
+        or (
             EventOption(
                 option_id="chosen",
                 label="Chosen",
@@ -575,9 +927,14 @@ def routine_raw(profile_id: str) -> dict[str, object]:
         "comfort_value": 0.0,
         "goal_tags": [],
         "food_budget": "5.00",
+        "minimum_food_budget": "4.00",
         "transport_budget": "3.00",
         "discretionary_budget": "2.00",
         "social_contact": 0.5,
         "physical_activity": 0.5,
         "recovery_intensity": 0.5,
     }
+
+
+def component(evaluation: OptionEvaluation, name: str) -> DecisionScoreComponent:
+    return next(item for item in evaluation.components if item.name == name)
