@@ -1,6 +1,6 @@
 # LifeSim Engine
 
-LifeSim Engine is a deterministic simulation core for life-simulation experiments. M0 established the Python package skeleton and deterministic configuration. M1 added reusable composed agent state and a Maya starting scenario. M2 integrates those pieces with a generic weekly loop that can carry an agent state from week 0 through `duration_weeks`. M3 adds a reusable event engine for deterministic, state-conditioned weekly occurrences. M4 adds a transparent decision engine that chooses among event options. M5 adds a consequence engine that applies actual state changes and delayed effects from chosen decisions. M6 adds memory and learning so experienced consequences can influence future decisions. M7 adds passive life and routine state so ordinary weeks can still advance Maya's money, needs, health, and mental load. M8 adds a deterministic employment market, hiring pipeline, contracts, wages, and weekly work effects.
+LifeSim Engine is a deterministic simulation core for life-simulation experiments. M0 established the Python package skeleton and deterministic configuration. M1 added reusable composed agent state and a Maya starting scenario. M2 integrates those pieces with a generic weekly loop that can carry an agent state from week 0 through `duration_weeks`. M3 adds a reusable event engine for deterministic, state-conditioned weekly occurrences. M4 adds a transparent decision engine that chooses among event options. M5 adds a consequence engine that applies actual state changes and delayed effects from chosen decisions. M6 adds memory and learning so experienced consequences can influence future decisions. M7 adds passive life and routine state so ordinary weeks can still advance Maya's money, needs, health, and mental load. M8 adds a deterministic employment market, hiring pipeline, contracts, wages, and weekly work effects. M9 adds zero-RNG skills and education development through M4 weekly development choices.
 
 ## Requirements
 
@@ -26,18 +26,18 @@ The default configuration defines a simulation name, seed, duration in weeks, an
 To run Maya through the weekly engine with starter events, decisions, and consequences:
 
 ```powershell
-python scripts/run_demo.py --config configs/default.toml --agent-scenario configs/scenarios/maya_start.toml --event-catalog configs/events/starter.toml --consequence-catalog configs/consequences/starter.toml --routine-catalog configs/routines/starter.toml --employment-catalog configs/employment/starter.toml
+python scripts/run_demo.py --config configs/default.toml --agent-scenario configs/scenarios/maya_start.toml --event-catalog configs/events/starter.toml --consequence-catalog configs/consequences/starter.toml --routine-catalog configs/routines/starter.toml --employment-catalog configs/employment/starter.toml --development-catalog configs/development/starter.toml
 ```
 
-Maya-specific values live in `configs/scenarios/maya_start.toml`; the core engine and agent model remain reusable for future characters. Event definitions and perceived decision options live in data under `configs/events/`; real outcome definitions live separately under `configs/consequences/`; weekly routine profiles live under `configs/routines/`; employment opportunities live under `configs/employment/`. When an agent scenario is supplied, each weekly simulation snapshot includes the complete serialized `AgentState` plus that week's event occurrences, event selection traces, decisions, score traces, consequence records, learning records, passive life records, and employment records.
+Maya-specific values live in `configs/scenarios/maya_start.toml`; the core engine and agent model remain reusable for future characters. Event definitions and perceived decision options live in data under `configs/events/`; real outcome definitions live separately under `configs/consequences/`; weekly routine profiles live under `configs/routines/`; employment opportunities live under `configs/employment/`; development skills, education programs, and weekly study/practice profiles live under `configs/development/`. When an agent scenario is supplied, each weekly simulation snapshot includes the complete serialized `AgentState` plus that week's event occurrences, event selection traces, decisions, score traces, consequence records, learning records, passive life records, employment records, and development records.
 
-M1 stores monetary scenario values as quoted decimal strings in TOML, parses them to `Decimal`, and serializes them back to exact strings for future checkpoints and JSON logs. M5 uses the same exact Decimal handling for monetary consequence deltas, and M8 uses it for hourly rates and weekly wages. Maya is also represented with state-only education, health, mental, personality, finance, memory, and skill components; no relationship-specific, skill-learning, education-progress, promotion, performance-review, or personality evolution logic runs yet.
+M1 stores monetary scenario values as quoted decimal strings in TOML, parses them to `Decimal`, and serializes them back to exact strings for future checkpoints and JSON logs. M5 uses the same exact Decimal handling for monetary consequence deltas, and M8 uses it for hourly rates and weekly wages. Maya is also represented with state-only education, health, mental, personality, finance, memory, and skill components; no relationship-specific, promotion, performance-review, personality, or habit evolution logic runs yet.
 
 ## Weekly Lifecycle
 
 An agent run starts by seeding a per-run RNG, recording week 0 with the supplied immutable `AgentState`, and then advancing week by week through a small transition pipeline. Transitions receive a `WeeklyContext`, return a new `AgentState` or explicit transition result, and are validated before the next snapshot is recorded. Transitions must not retain run-specific mutable state between runs; durable simulation state belongs in `AgentState` or explicit run context. Later transitions in a week can inspect events, decisions, and consequences produced by earlier transitions.
 
-The default M8 causal order is:
+The default M9 causal order is:
 
 ```text
 scheduled consequences due this week
@@ -45,6 +45,7 @@ memory learning from those scheduled consequences
 employment boundary starts/ends due this week
 passive income, obligations, debt interest, debt payments, and arrears
 routine planning through the Decision Engine
+development planning through the Decision Engine
 employment market discovery and employer stage resolution
 event selection
 decision selection using current memory
@@ -52,6 +53,7 @@ immediate consequences and newly scheduled delayed effects
 employment process updates from M4 decisions
 memory learning from immediate consequences
 weekly work effects
+development execution and education/skill progress
 routine execution and passive routine effects
 ```
 
@@ -99,6 +101,18 @@ The hiring sequence is deliberately paced across weeks: an opening can be discov
 
 Active work applies modest deterministic weekly effects to ordinary-life state such as energy, stress, mental load, recovery need, and purpose, then routine execution can help Maya recover or socialize. Fixed-term contracts use `end_week_exclusive`: a contract starting in week 10 for 8 working weeks is active for weeks 10 through 17 and ends at the start of week 18.
 
+## Skills & Education Engine
+
+M9 keeps practical development separate from M6 psychological memory. The guiding rules are: "Practice creates experience; experience can create skill." and "Enrollment creates an opportunity to progress, not automatic progress."
+
+Development profiles are data-defined weekly study/practice options. A `DevelopmentPlanningTransition` creates one `weekly_development` opportunity per week and records the applicable profiles; the normal canonical M4 `DecisionEngineTransition` makes the choice later with the same transparent score audit as other choices. There is no separate development decision brain.
+
+Profiles with formal education hours are applicable only while the agent is enrolled in a resolvable program. Practice-only or zero-education profiles can remain available after graduation, so a completed degree does not secretly continue consuming study hours.
+
+Development execution is deterministic and zero-RNG. It consumes the same-week M4 development decision exactly once, then converts actual study, direct practice, and completed M8 work records into skill experience. Skill growth aggregates sources first, applies smooth diminishing returns, and never decreases skills or exceeds level 100. Missing skills can be created only when valid catalog-defined experience is genuinely gained.
+
+Education progress depends on actual chosen study hours, nominal weekly study load, current energy, stress, mental load, recovery need, and combined work plus development workload. Progress is gradual, non-decreasing, clamped at 100, and advances academic year from overall program progress. Completing a degree changes only education state and whatever skills were actually developed; it does not create money, employment, personality changes, relationships, or memories.
+
 ## Test
 
 ```powershell
@@ -111,6 +125,7 @@ ruff check .
 ```text
 configs/              Example and default configuration files
 configs/consequences/ Consequence catalog files
+configs/development/  Skills, education programs, and weekly development profiles
 configs/employment/   Employment job-market catalog files
 configs/events/       Event catalog files
 configs/routines/     Weekly routine profile catalog files
@@ -119,6 +134,7 @@ runs/                 Local simulation outputs; ignored except for .gitkeep
 scripts/              Developer and demo entry-point scripts
 src/lifesim/consequences/ Consequence engine package
 src/lifesim/decisions/ Decision engine package
+src/lifesim/development/ Skills and education development package
 src/lifesim/employment/ Employment market and work engine package
 src/lifesim/learning/ Memory and learning engine package
 src/lifesim/passive/  Passive life and routine engine package
@@ -128,4 +144,4 @@ tests/                Pytest suite
 
 ## Determinism
 
-Simulation runs are seeded from configuration. Each `run()` resets its event RNG from `simulation.seed`, so repeated runs with the same configuration produce the same results. Decision noise, consequence outcome selection, passive income reliability, employment market discovery, application responses, and interview outcomes use deterministic SHA-256-derived local seeds and do not consume each other's RNG streams. Routine execution, work effects, memory formation, reinforcement, decay, and retrieval are deterministic and use no RNG. RNG probes stay in tests rather than domain state.
+Simulation runs are seeded from configuration. Each `run()` resets its event RNG from `simulation.seed`, so repeated runs with the same configuration produce the same results. Decision noise, consequence outcome selection, passive income reliability, employment market discovery, application responses, and interview outcomes use deterministic SHA-256-derived local seeds and do not consume each other's RNG streams. Routine execution, work effects, development execution, skill growth, education progress, memory formation, reinforcement, decay, and retrieval are deterministic and use no RNG. RNG probes stay in tests rather than domain state.

@@ -172,6 +172,7 @@ def _score_components(
     energy_ratio = option.energy_cost / 100.0
     time_ratio = option.time_cost_hours / 168.0
     recurring_time_ratio = option.ongoing_weekly_time_hours / 168.0
+    committed_time_modifier = _committed_time_modifier(state)
     goal_signal = _goal_alignment_signal(state, option)
 
     specs = (
@@ -203,7 +204,11 @@ def _score_components(
             -energy_ratio,
             0.5 + (1.0 - health.energy / 100.0) * 1.5 + mental.recovery_need / 100.0 * 0.5,
         ),
-        ("time_cost", -time_ratio, 0.4 + personality.conscientiousness * 0.5),
+        (
+            "time_cost",
+            -time_ratio,
+            (0.4 + personality.conscientiousness * 0.5) * committed_time_modifier,
+        ),
         (
             "recurring_time_commitment",
             -recurring_time_ratio,
@@ -340,6 +345,12 @@ def _recurring_gain_ratio(gain: Decimal) -> float:
     if gain <= Decimal(0):
         return 0.0
     return min(1.5, float(gain / Decimal("400.00")))
+
+
+def _committed_time_modifier(state: AgentState) -> float:
+    """Increase one-week optional time-cost pressure when work already claims time."""
+    weekly_hours = state.employment.weekly_hours if state.employment.status == "employed" else 0.0
+    return 1.0 + min(0.75, max(0.0, weekly_hours) / 80.0)
 
 
 def _goal_alignment_signal(state: AgentState, option: EventOption) -> float:
