@@ -60,7 +60,7 @@ def parse_agent_state(raw: dict[str, Any]) -> AgentState:
         education=EducationState(**_require_section(agent, "education")),
         goals=_parse_goals(_require_section(agent, "goals")),
         skills=_parse_skills(_require_section(agent, "skills")),
-        employment=EmploymentState(**_require_section(agent, "employment")),
+        employment=_parse_employment(_require_section(agent, "employment")),
         social=_parse_social(_require_section(agent, "social")),
         habits=_parse_habits(_require_section(agent, "habits")),
         knowledge=_parse_knowledge(_require_section(agent, "knowledge")),
@@ -99,6 +99,8 @@ def _parse_financial(raw: dict[str, Any]) -> FinancialState:
                 cadence=item["cadence"],
                 reliability=item["reliability"],
                 due_day=item.get("due_day", 1),
+                source_type=item.get("source_type", "generic"),
+                source_id=item.get("source_id", ""),
             )
             for item in _raw_items(raw, "income_streams")
         ),
@@ -146,6 +148,13 @@ def _parse_goals(raw: dict[str, Any]) -> GoalsState:
 
 def _parse_skills(raw: dict[str, Any]) -> SkillsState:
     return SkillsState(items=_items(raw, "items", SkillRating))
+
+
+def _parse_employment(raw: dict[str, Any]) -> EmploymentState:
+    values = dict(raw)
+    if "hourly_rate" in values:
+        values["hourly_rate"] = _money(values["hourly_rate"], "hourly_rate")
+    return EmploymentState(**values)
 
 
 def _parse_social(raw: dict[str, Any]) -> SocialState:

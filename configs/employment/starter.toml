@@ -1,0 +1,172 @@
+[employment_settings]
+max_discoveries_per_week = 2
+relisting_cooldown_weeks = 3
+
+[[jobs]]
+job_id = "cafe_counter_assistant"
+version = "1"
+role_title = "Cafe Counter Assistant"
+employer = "Brindle Cup Cafe"
+sector = "hospitality"
+tags = ["hospitality", "customer_service", "entry_level"]
+contract_type = "part_time"
+weekly_hours = 18.0
+hourly_rate = "11.80"
+stability = 0.55
+fixed_term_weeks = 0
+physical_demand = 0.45
+mental_demand = 0.35
+social_demand = 0.75
+base_discovery_weight = 1.0
+base_interview_probability = 0.36
+base_offer_probability = 0.34
+
+[[jobs.skill_requirements]]
+skill_name = "customer service"
+desired_level = 45.0
+weight = 1.0
+
+[[jobs.skill_requirements]]
+skill_name = "local language"
+desired_level = 35.0
+weight = 0.7
+
+[[jobs]]
+job_id = "retail_assistant"
+version = "1"
+role_title = "Retail Assistant"
+employer = "North Arcade Books"
+sector = "retail"
+tags = ["retail", "customer_service", "entry_level"]
+contract_type = "part_time"
+weekly_hours = 20.0
+hourly_rate = "11.60"
+stability = 0.6
+fixed_term_weeks = 0
+physical_demand = 0.35
+mental_demand = 0.35
+social_demand = 0.65
+base_discovery_weight = 0.9
+base_interview_probability = 0.34
+base_offer_probability = 0.32
+
+[[jobs.skill_requirements]]
+skill_name = "customer service"
+desired_level = 42.0
+weight = 1.0
+
+[[jobs.skill_requirements]]
+skill_name = "basic budgeting"
+desired_level = 30.0
+weight = 0.4
+
+[[jobs]]
+job_id = "reception_assistant"
+version = "1"
+role_title = "Reception Assistant"
+employer = "Veyra Language House"
+sector = "administration"
+tags = ["administration", "customer_service", "language"]
+contract_type = "part_time"
+weekly_hours = 16.0
+hourly_rate = "12.40"
+stability = 0.62
+fixed_term_weeks = 12
+physical_demand = 0.15
+mental_demand = 0.45
+social_demand = 0.7
+base_discovery_weight = 0.7
+base_interview_probability = 0.31
+base_offer_probability = 0.29
+
+[[jobs.skill_requirements]]
+skill_name = "local language"
+desired_level = 50.0
+weight = 1.0
+
+[[jobs.skill_requirements]]
+skill_name = "customer service"
+desired_level = 45.0
+weight = 0.8
+
+[[jobs]]
+job_id = "temporary_admin_assistant"
+version = "1"
+role_title = "Temporary Administrative Assistant"
+employer = "Civic Lane Services"
+sector = "administration"
+tags = ["administration", "temporary", "spreadsheets"]
+contract_type = "fixed_term"
+weekly_hours = 14.0
+hourly_rate = "12.90"
+stability = 0.45
+fixed_term_weeks = 8
+physical_demand = 0.1
+mental_demand = 0.55
+social_demand = 0.35
+base_discovery_weight = 0.8
+base_interview_probability = 0.33
+base_offer_probability = 0.31
+
+[[jobs.skill_requirements]]
+skill_name = "spreadsheets"
+desired_level = 45.0
+weight = 1.0
+
+[[jobs.skill_requirements]]
+skill_name = "basic budgeting"
+desired_level = 35.0
+weight = 0.6
+
+[[jobs]]
+job_id = "customer_support_associate"
+version = "1"
+role_title = "Customer Support Associate"
+employer = "HelioDesk Europe"
+sector = "support"
+tags = ["support", "customer_service", "remote_possible"]
+contract_type = "part_time"
+weekly_hours = 22.0
+hourly_rate = "12.20"
+stability = 0.58
+fixed_term_weeks = 0
+physical_demand = 0.05
+mental_demand = 0.65
+social_demand = 0.7
+base_discovery_weight = 0.65
+base_interview_probability = 0.30
+base_offer_probability = 0.28
+
+[[jobs.skill_requirements]]
+skill_name = "customer service"
+desired_level = 50.0
+weight = 1.0
+
+[[jobs.skill_requirements]]
+skill_name = "local language"
+desired_level = 45.0
+weight = 0.8
+
+[[jobs]]
+job_id = "warehouse_stock_assistant"
+version = "1"
+role_title = "Warehouse Stock Assistant"
+employer = "Rivermark Goods"
+sector = "logistics"
+tags = ["logistics", "physical", "entry_level"]
+contract_type = "fixed_term"
+weekly_hours = 20.0
+hourly_rate = "12.00"
+stability = 0.42
+fixed_term_weeks = 10
+physical_demand = 0.8
+mental_demand = 0.25
+social_demand = 0.35
+base_discovery_weight = 0.75
+base_interview_probability = 0.38
+base_offer_probability = 0.35
+
+[[jobs.skill_requirements]]
+skill_name = "customer service"
+desired_level = 20.0
+weight = 0.25

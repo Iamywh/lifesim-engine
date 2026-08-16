@@ -13,6 +13,17 @@ from lifesim.consequences.engine import (
     ScheduledConsequenceTransition,
 )
 from lifesim.decisions.engine import DecisionEngine, DecisionEngineTransition
+from lifesim.employment.catalog import load_employment_catalog
+from lifesim.employment.engine import (
+    EmploymentBoundaryEngine,
+    EmploymentBoundaryTransition,
+    EmploymentDecisionTransition,
+    EmploymentMarketEngine,
+    EmploymentMarketTransition,
+    EmploymentProcessEngine,
+    EmploymentWorkEngine,
+    EmploymentWorkTransition,
+)
 from lifesim.engine import LifeSimEngine
 from lifesim.events.catalog import load_event_catalog
 from lifesim.events.engine import EventEngine, EventEngineTransition
@@ -58,6 +69,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("configs/routines/starter.toml"),
         help="Path to a routine catalog TOML file used when an agent scenario is supplied.",
     )
+    parser.add_argument(
+        "--employment-catalog",
+        type=Path,
+        default=Path("configs/employment/starter.toml"),
+        help="Path to an employment catalog TOML file used when an agent scenario is supplied.",
+    )
     return parser
 
 
@@ -76,16 +93,21 @@ def main() -> None:
         consequence_engine = ConsequenceEngine(consequence_catalog)
         learning_engine = LearningEngine()
         routine_engine = RoutineEngine(load_routine_catalog(args.routine_catalog))
+        employment_catalog = load_employment_catalog(args.employment_catalog)
         decision_engine = DecisionEngine()
         transitions = (
             ScheduledConsequenceTransition(consequence_engine),
             LearningTransition(learning_engine),
+            EmploymentBoundaryTransition(EmploymentBoundaryEngine()),
             PassiveCashflowTransition(PassiveCashflowEngine()),
             RoutinePlanningTransition(routine_engine, decision_engine),
+            EmploymentMarketTransition(EmploymentMarketEngine(employment_catalog)),
             EventEngineTransition(EventEngine(event_catalog)),
             DecisionEngineTransition(decision_engine),
             DecisionConsequenceTransition(consequence_engine),
+            EmploymentDecisionTransition(EmploymentProcessEngine(employment_catalog)),
             LearningTransition(learning_engine),
+            EmploymentWorkTransition(EmploymentWorkEngine()),
             RoutineExecutionTransition(routine_engine),
         )
     result = LifeSimEngine(config, transitions=transitions).run(initial_agent=initial_agent)
