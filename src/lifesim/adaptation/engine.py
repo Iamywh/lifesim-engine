@@ -12,6 +12,7 @@ from lifesim.adaptation.model import (
     HabitCandidateChange,
     HabitCandidateState,
     HabitStrengthChange,
+    PersonalityAnchor,
     PersonalityTraitChange,
     RoutineStabilityRecord,
     TraitEvidenceAccumulator,
@@ -48,7 +49,13 @@ class AdaptationEngine:
         decisions = _decisions_by_id(context.decisions)
         events = _events_by_key(context.events)
         processed_behavior = list(runtime.processed_behavior_decision_ids)
-        behavior = _behavior_evidence(context, decisions, events, set(processed_behavior))
+        processed_experience = tuple(
+            record.consequence_id
+            for record in context.learning_records
+            if isinstance(record, LearningRecord)
+            and record.consequence_id not in runtime.processed_experience_ids
+        )
+        behavior = _behavior_evidence(state, context, decisions, events, set(processed_behavior))
         processed_behavior.extend(record.decision_id for record in behavior)
         existing_habits = {habit.habit_id: habit for habit in state.habits.items}
         candidate_changes, candidates, new_habits, habit_changes = _update_habits(
@@ -58,6 +65,7 @@ class AdaptationEngine:
             runtime.habit_candidates,
             behavior,
             existing_habits,
+            decisions,
             events,
         )
         routine_stability, routine_after = _routine_stability(
@@ -66,6 +74,7 @@ class AdaptationEngine:
             self._catalog,
         )
         trait_evidence = _trait_evidence(
+            state,
             context,
             self._catalog,
             behavior,
@@ -94,17 +103,12 @@ class AdaptationEngine:
         record = AdaptationWeekRecord(
             week=context.week,
             behavior_evidence=behavior,
+            processed_experience_ids=processed_experience,
             habit_candidate_changes=candidate_changes,
             habit_strength_changes=habit_changes,
             routine_stability=routine_stability,
             trait_evidence=trait_evidence,
             personality_changes=personality_changes,
-        )
-        processed_experience = tuple(
-            record.consequence_id
-            for record in context.learning_records
-            if isinstance(record, LearningRecord)
-            and record.consequence_id not in runtime.processed_experience_ids
         )
         runtime = replace(
             runtime,
@@ -143,6 +147,7 @@ def _runtime(context: WeeklyContext) -> AdaptationRuntimeState:
 
 
 def _behavior_evidence(
+    state: AgentState,
     context: WeeklyContext,
     decisions: dict[str, DecisionRecord],
     events: dict[tuple[str, str], EventOccurrence],
@@ -157,6 +162,8 @@ def _behavior_evidence(
         decision = decisions.get(decision_id)
         if decision is None or decision.chosen_option_id is None:
             raise ValueError("Executed behavior record must reference a real M4 decision.")
+        if decision.agent_id != state.identity.agent_id:
+            raise ValueError("Executed behavior decision must belong to the current agent.")
         if decision.week != context.week:
             raise ValueError("Executed behavior decision must belong to the current adaptation week.")
         event = events.get((decision.source_event_id, decision.source_event_version))
@@ -165,6 +172,7 @@ def _behavior_evidence(
         if event.week != context.week:
             raise ValueError("Executed behavior event must belong to the current adaptation week.")
         option = _option(event, decision.chosen_option_id)
+        _validate_source_record(source_system, record, context.week, decision, event)
         if not option.behavior_tags:
             continue
         seen.add(decision_id)
@@ -197,6 +205,99 @@ def _executed_records(context: WeeklyContext) -> tuple[tuple[str, Any], ...]:
     return tuple(output)
 
 
+def _validate_source_record(
+    source_system: str,
+    record: Any,
+    week: int,
+    decision: DecisionRecord,
+    event: EventOccurrence,
+) -> None:
+    if getattr(record, "week", None) != week:
+        raise ValueError("Executed behavior source record must belong to the current week.")
+    if getattr(record, "decision_id", "") != decision.decision_id:
+        raise ValueError("Executed behavior source record must reference the chosen decision.")
+    option_id = decision.chosen_option_id
+    if option_id is None:
+        raise ValueError("Executed behavior source record must reference a chosen option.")
+    if source_system == "routine":
+        if event.event_id != "weekly_routine":
+            raise ValueError("Routine behavior evidence must come from weekly_routine.")
+        if record.profile_id != option_id:
+            raise ValueError("Routine behavior evidence profile_id must match the chosen option.")
+    elif source_system == "development":
+        if event.event_id != "weekly_development":
+            raise ValueError("Development behavior evidence must come from weekly_development.")
+        if record.profile_id != option_id:
+            raise ValueError("Development behavior evidence profile_id must match the chosen option.")
+    elif source_system == "social":
+        if record.option_id != option_id:
+            raise ValueError("Social behavior evidence option_id must match the chosen option.")
+        _validate_social_interaction(option_id, record)
+    elif source_system == "employment":
+        _validate_employment_stage(option_id, record, event)
+    else:
+        raise ValueError(f"Unexpected behavior evidence source system '{source_system}'.")
+
+
+def _validate_social_interaction(option_id: str, record: SocialInteractionRecord) -> None:
+    if option_id == "keep_social_light":
+        expected_type = "keep_social_light"
+        expected_contact = ""
+    elif option_id.startswith("connect:"):
+        expected_type = "connect"
+        expected_contact = option_id.removeprefix("connect:")
+    elif option_id.startswith("seek_support:"):
+        expected_type = "seek_support"
+        expected_contact = option_id.removeprefix("seek_support:")
+    elif option_id.startswith("engage:"):
+        expected_type = "engage"
+        expected_contact = option_id.removeprefix("engage:")
+    else:
+        raise ValueError("Social behavior evidence option_id is not structurally valid.")
+    if record.interaction_type != expected_type:
+        raise ValueError("Social behavior evidence interaction_type must match the chosen option.")
+    if record.contact_id != expected_contact:
+        raise ValueError("Social behavior evidence contact_id must match the chosen option.")
+
+
+def _validate_employment_stage(
+    option_id: str,
+    record: ApplicationStageRecord,
+    event: EventOccurrence,
+) -> None:
+    expected = {
+        "apply": ("APPLICATION_DECISION", "submitted", "SUBMITTED"),
+        "skip": ("APPLICATION_DECISION", "skipped", "SKIPPED"),
+        "attend_interview": ("INTERVIEW_DECISION", "interview_attended", "INTERVIEW_ATTENDED"),
+        "decline_interview": ("INTERVIEW_DECISION", "interview_declined", "WITHDRAWN"),
+        "accept_offer": ("OFFER_DECISION", "accepted_start_scheduled", "ACCEPTED"),
+        "decline_offer": ("OFFER_DECISION", "declined", "DECLINED"),
+    }.get(option_id)
+    if expected is None:
+        raise ValueError("Employment behavior evidence option_id is not a voluntary employment action.")
+    if event.event_id.startswith("employment_opening:"):
+        if option_id not in {"apply", "skip"}:
+            raise ValueError("Employment opening evidence must come from an application decision.")
+        job_key = event.event_id.removeprefix("employment_opening:")
+        if job_key != f"{record.job_id}:{record.job_version}":
+            raise ValueError("Employment behavior evidence job key must match the source event.")
+    elif event.event_id.startswith("employment_interview:"):
+        if option_id not in {"attend_interview", "decline_interview"}:
+            raise ValueError("Employment interview evidence must come from an interview decision.")
+        if event.event_id.removeprefix("employment_interview:") != record.application_id:
+            raise ValueError("Employment behavior evidence application_id must match the source event.")
+    elif event.event_id.startswith("employment_offer:"):
+        if option_id not in {"accept_offer", "decline_offer"}:
+            raise ValueError("Employment offer evidence must come from an offer decision.")
+        if event.event_id.removeprefix("employment_offer:") != record.application_id:
+            raise ValueError("Employment behavior evidence application_id must match the source event.")
+    else:
+        raise ValueError("Employment behavior evidence must come from an employment decision event.")
+    stage, detail, status = expected
+    if record.stage != stage or record.detail != detail or record.status_after != status:
+        raise ValueError("Employment behavior evidence stage/detail/status must match the chosen option.")
+
+
 def _update_habits(
     state: AgentState,
     context: WeeklyContext,
@@ -204,6 +305,7 @@ def _update_habits(
     candidates: tuple[HabitCandidateState, ...],
     evidence: tuple[BehaviorEvidenceRecord, ...],
     existing_habits: dict[str, Habit],
+    decisions: dict[str, DecisionRecord],
     events: dict[tuple[str, str], EventOccurrence],
 ) -> tuple[
     tuple[HabitCandidateChange, ...],
@@ -224,7 +326,7 @@ def _update_habits(
     next_candidates: list[HabitCandidateState] = []
     new_habits: list[Habit] = []
     habit_changes: list[HabitStrengthChange] = []
-    offered_tags = _offered_behavior_tags(events)
+    available_tags = _available_behavior_tags(decisions, events)
     for definition in catalog.habits:
         matches = evidence_by_habit[definition.habit_id]
         candidate = candidates_by_id.get(definition.habit_id, HabitCandidateState(definition.habit_id))
@@ -262,7 +364,7 @@ def _update_habits(
                 after = _clamp100(existing.strength + definition.reinforcement_rate * (1.0 - existing.strength / 100.0))
                 if after != existing.strength:
                     habit_changes.append(HabitStrengthChange(definition.habit_id, existing.strength, after, "reinforced", tuple(record.decision_id for record in matches)))
-            elif set(definition.behavior_tags).intersection(offered_tags) and context.week - existing.last_reinforced_week > definition.grace_weeks:
+            elif set(definition.behavior_tags).intersection(available_tags) and context.week - existing.last_reinforced_week > definition.grace_weeks:
                 after = _clamp100(existing.strength - definition.nonuse_decay_rate)
                 if after != existing.strength:
                     habit_changes.append(HabitStrengthChange(definition.habit_id, existing.strength, after, "observable_nonuse"))
@@ -292,6 +394,7 @@ def _routine_stability(
 
 
 def _trait_evidence(
+    state: AgentState,
     context: WeeklyContext,
     catalog: AdaptationCatalog,
     behavior: tuple[BehaviorEvidenceRecord, ...],
@@ -302,10 +405,22 @@ def _trait_evidence(
     records: list[TraitEvidenceRecord] = []
     for evidence in behavior:
         for tag in evidence.behavior_tags:
-            records.extend(_mapped_records(context.week, catalog, "behavior_tag", tag, evidence.decision_id, evidence.source_system, 0.35, 1.0))
+            records.extend(
+                _mapped_records(
+                    context.week,
+                    catalog,
+                    "behavior_tag",
+                    tag,
+                    evidence.decision_id,
+                    "behavior",
+                    evidence.source_system,
+                    0.35,
+                    1.0,
+                )
+            )
         decision = decisions[evidence.decision_id]
         event = events[(decision.source_event_id, decision.source_event_version)]
-        records.extend(_choice_metric_evidence(context.week, catalog, decision, event))
+        records.extend(_choice_metric_evidence(state, context.week, catalog, decision, event, evidence.source_system))
     for record in context.learning_records:
         if not isinstance(record, LearningRecord) or record.consequence_id in processed_experience:
             continue
@@ -313,32 +428,61 @@ def _trait_evidence(
         if evaluation.salience < 0.35:
             continue
         key = "positive_salient" if evaluation.valence > 0 else "negative_salient"
-        records.extend(_mapped_records(context.week, catalog, "experienced_outcome", key, record.consequence_id, "learning", abs(evaluation.valence), evaluation.salience))
+        records.extend(
+            _mapped_records(
+                context.week,
+                catalog,
+                "experienced_outcome",
+                key,
+                record.consequence_id,
+                "learning",
+                "learning",
+                abs(evaluation.valence),
+                evaluation.salience,
+            )
+        )
     return tuple(records)
 
 
 def _choice_metric_evidence(
+    state: AgentState,
     week: int,
     catalog: AdaptationCatalog,
     decision: DecisionRecord,
     event: EventOccurrence,
+    source_family: str,
 ) -> tuple[TraitEvidenceRecord, ...]:
     available = [option for option in event.options if option.option_id in decision.available_option_ids]
     chosen = next((option for option in available if option.option_id == decision.chosen_option_id), None)
     if chosen is None or len(available) < 2:
         return ()
+    cost_pressure = max(
+        abs(_option_evaluation_signal(decision, option.option_id, "financial_cost"))
+        for option in available
+    )
+    cost_restraint_weight = max(0.0, 1.0 - cost_pressure)
     metrics = {
-        "risk_preference": (chosen.perceived_risk, [option.perceived_risk for option in available]),
-        "future_orientation": (chosen.future_value, [option.future_value for option in available]),
-        "short_term_orientation": (chosen.short_term_value, [option.short_term_value for option in available]),
-        "cost_restraint": (-float(chosen.estimated_cost), [-float(option.estimated_cost) for option in available]),
-        "learning_orientation": (chosen.learning_value, [option.learning_value for option in available]),
-        "social_orientation": (chosen.social_value, [option.social_value for option in available]),
-        "autonomy_orientation": (chosen.autonomy_value, [option.autonomy_value for option in available]),
-        "goal_alignment": (_option_evaluation_signal(decision, chosen.option_id, "goal_alignment"), [_option_evaluation_signal(decision, option.option_id, "goal_alignment") for option in available]),
+        "risk_preference": (chosen.perceived_risk, [option.perceived_risk for option in available], 1.0),
+        "future_orientation": (chosen.future_value, [option.future_value for option in available], 1.0),
+        "short_term_orientation": (chosen.short_term_value, [option.short_term_value for option in available], 1.0),
+        "cost_restraint": (
+            -float(chosen.estimated_cost),
+            [-float(option.estimated_cost) for option in available],
+            cost_restraint_weight,
+        ),
+        "learning_orientation": (chosen.learning_value, [option.learning_value for option in available], 1.0),
+        "social_orientation": (chosen.social_value, [option.social_value for option in available], 1.0),
+        "autonomy_orientation": (chosen.autonomy_value, [option.autonomy_value for option in available], 1.0),
+        "goal_alignment": (
+            _option_evaluation_signal(decision, chosen.option_id, "goal_alignment"),
+            [_option_evaluation_signal(decision, option.option_id, "goal_alignment") for option in available],
+            1.0,
+        ),
     }
     records: list[TraitEvidenceRecord] = []
-    for key, (chosen_value, values) in metrics.items():
+    for key, (chosen_value, values, weight_multiplier) in metrics.items():
+        if key in {"future_orientation", "goal_alignment"} and _recovery_choice_under_pressure(state, chosen):
+            continue
         variance = max(values) - min(values)
         if variance < 0.05:
             continue
@@ -346,8 +490,29 @@ def _choice_metric_evidence(
         signal = max(-1.0, min(1.0, (chosen_value - mean) / max(variance, 0.000001)))
         if abs(signal) < 0.05:
             continue
-        records.extend(_mapped_records(week, catalog, "choice_metric", key, decision.decision_id, "decision", signal, min(1.0, variance)))
+        weight = min(1.0, variance) * weight_multiplier
+        if weight <= 0.0:
+            continue
+        records.extend(
+            _mapped_records(
+                week,
+                catalog,
+                "choice_metric",
+                key,
+                decision.decision_id,
+                "choice_metric",
+                source_family,
+                signal,
+                weight,
+            )
+        )
     return tuple(records)
+
+
+def _recovery_choice_under_pressure(state: AgentState, chosen: EventOption) -> bool:
+    if not set(chosen.behavior_tags).intersection({"recovery", "social_recovery"}):
+        return False
+    return state.health.energy <= 35.0 or state.mental.recovery_need >= 65.0
 
 
 def _mapped_records(
@@ -357,6 +522,7 @@ def _mapped_records(
     key: str,
     source_id: str,
     source_type: str,
+    source_family: str,
     signal: float,
     weight: float,
 ) -> tuple[TraitEvidenceRecord, ...]:
@@ -365,6 +531,7 @@ def _mapped_records(
             week=week,
             source_id=source_id,
             source_type=source_type,
+            source_family=source_family,
             evidence_type=evidence_type,
             evidence_key=key,
             trait=mapping.trait,
@@ -389,26 +556,36 @@ def _update_accumulators(
     output = []
     for trait in PERSONALITY_TRAITS:
         current = by_trait.get(trait, TraitEvidenceAccumulator(trait))
-        gap = max(0, week - current.last_evidence_week) if current.last_evidence_week else 0
-        decay = catalog.settings.evidence_decay_rate ** gap
+        elapsed = max(0, week - current.last_updated_week) if current.last_updated_week else 0
+        decay = catalog.settings.evidence_decay_rate ** elapsed
         signed = current.signed_evidence * decay
         weight = current.evidence_weight * decay
         weeks = set(current.distinct_weeks)
-        source_types = set(current.source_types)
+        source_families = set(current.source_families)
         for record in grouped[trait]:
             signed += record.signal * record.weight
             weight += record.weight
             weeks.add(record.week)
-            source_types.add(record.source_type)
+            source_families.add(record.source_family)
         last = week if grouped[trait] else current.last_evidence_week
-        output.append(TraitEvidenceAccumulator(trait, signed, weight, tuple(sorted(weeks)), tuple(sorted(source_types)), last))
+        output.append(
+            TraitEvidenceAccumulator(
+                trait,
+                signed,
+                weight,
+                tuple(sorted(weeks)),
+                tuple(sorted(source_families)),
+                last,
+                week,
+            )
+        )
     return tuple(output)
 
 
 def _update_personality(
     state: AgentState,
     catalog: AdaptationCatalog,
-    anchor: dict[str, float],
+    anchor: PersonalityAnchor,
     accumulators: tuple[TraitEvidenceAccumulator, ...],
 ):
     values = state.personality.to_dict()
@@ -418,9 +595,10 @@ def _update_personality(
         if accumulator.evidence_weight <= 0.0 or len(accumulator.distinct_weeks) < 3:
             continue
         signal = max(-1.0, min(1.0, accumulator.signed_evidence / accumulator.evidence_weight))
-        diversity = min(1.0, len(accumulator.source_types) / 3.0)
+        diversity = min(1.0, len(accumulator.source_families) / 3.0)
         confidence = min(1.0, accumulator.evidence_weight / 4.0) * min(1.0, len(accumulator.distinct_weeks) / 8.0) * (0.55 + diversity * 0.45)
-        target = max(0.0, min(1.0, anchor[accumulator.trait] + signal * catalog.settings.max_trait_anchor_shift))
+        anchor_value = anchor.value(accumulator.trait)
+        target = max(0.0, min(1.0, anchor_value + signal * catalog.settings.max_trait_anchor_shift))
         raw_delta = (target - before) * catalog.settings.trait_adaptation_rate * confidence
         cap = catalog.settings.max_weekly_trait_delta
         delta = max(-cap, min(cap, raw_delta))
@@ -429,7 +607,7 @@ def _update_personality(
         changes.append(
             PersonalityTraitChange(
                 trait=accumulator.trait,
-                anchor=anchor[accumulator.trait],
+                anchor=anchor_value,
                 before=before,
                 target=target,
                 confidence=confidence,
@@ -468,9 +646,9 @@ def _merge_habits(
     return tuple(result)
 
 
-def _personality_anchor(state: AgentState) -> dict[str, float]:
+def _personality_anchor(state: AgentState) -> PersonalityAnchor:
     values = state.personality.to_dict()
-    return {trait: values[trait] for trait in PERSONALITY_TRAITS}
+    return PersonalityAnchor(**{trait: values[trait] for trait in PERSONALITY_TRAITS})
 
 
 def _decisions_by_id(decisions: tuple[Any, ...]) -> dict[str, DecisionRecord]:
@@ -500,8 +678,20 @@ def _source_record_id(source_system: str, record: Any) -> str:
     return f"{source_system}:{getattr(record, 'week', 0)}:{getattr(record, 'decision_id', '')}:{getattr(record, 'profile_id', getattr(record, 'stage', getattr(record, 'interaction_type', 'record')))}"
 
 
-def _offered_behavior_tags(events: dict[tuple[str, str], EventOccurrence]) -> set[str]:
-    return {tag for event in events.values() for option in event.options for tag in option.behavior_tags}
+def _available_behavior_tags(
+    decisions: dict[str, DecisionRecord],
+    events: dict[tuple[str, str], EventOccurrence],
+) -> set[str]:
+    tags = set()
+    for decision in decisions.values():
+        event = events.get((decision.source_event_id, decision.source_event_version))
+        if event is None:
+            continue
+        available_ids = set(decision.available_option_ids)
+        for option in event.options:
+            if option.option_id in available_ids:
+                tags.update(option.behavior_tags)
+    return tags
 
 
 def _option_evaluation_signal(decision: DecisionRecord, option_id: str, component_name: str) -> float:

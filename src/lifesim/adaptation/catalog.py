@@ -50,7 +50,6 @@ def _habit(raw: dict[str, Any]) -> HabitDefinition:
         formation_threshold=raw.get("formation_threshold", 9.0),
         minimum_reinforcing_weeks=raw.get("minimum_reinforcing_weeks", 3),
         grace_weeks=raw.get("grace_weeks", 2),
-        contradiction_tags=tuple(raw.get("contradiction_tags", ())),
     )
 
 

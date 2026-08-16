@@ -55,7 +55,6 @@ class HabitDefinition(SerializableState):
     formation_threshold: float
     minimum_reinforcing_weeks: int
     grace_weeks: int = 2
-    contradiction_tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("habit_id", "name", "cadence"):
@@ -63,12 +62,36 @@ class HabitDefinition(SerializableState):
         object.__setattr__(self, "behavior_tags", _strings(self.behavior_tags, "behavior_tags"))
         if not self.behavior_tags:
             raise ValueError("Expected habit definition behavior_tags to be non-empty.")
-        object.__setattr__(self, "contradiction_tags", _strings(self.contradiction_tags, "contradiction_tags"))
         for name in ("formation_rate", "reinforcement_rate", "nonuse_decay_rate"):
             object.__setattr__(self, name, _finite(getattr(self, name), name, 0.0, 25.0))
         object.__setattr__(self, "formation_threshold", _finite(self.formation_threshold, "formation_threshold", 0.0, 100.0))
         object.__setattr__(self, "minimum_reinforcing_weeks", _integer(self.minimum_reinforcing_weeks, "minimum_reinforcing_weeks", 2, 520))
         object.__setattr__(self, "grace_weeks", _integer(self.grace_weeks, "grace_weeks", 0, 520))
+
+
+@dataclass(frozen=True, slots=True)
+class PersonalityAnchor(SerializableState):
+    risk_tolerance: float
+    impulsivity: float
+    discipline: float
+    frugality: float
+    social_need: float
+    independence: float
+    resilience: float
+    curiosity: float
+    confidence: float
+    patience: float
+    conscientiousness: float
+    adaptability: float
+
+    def __post_init__(self) -> None:
+        for trait in PERSONALITY_TRAITS:
+            object.__setattr__(self, trait, _finite(getattr(self, trait), trait, 0.0, 1.0))
+
+    def value(self, trait: str) -> float:
+        if trait not in PERSONALITY_TRAITS:
+            raise ValueError(f"Unknown personality trait '{trait}'.")
+        return getattr(self, trait)
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +228,7 @@ class TraitEvidenceRecord(SerializableState):
     week: int
     source_id: str
     source_type: str
+    source_family: str
     evidence_type: str
     evidence_key: str
     trait: str
@@ -213,7 +237,7 @@ class TraitEvidenceRecord(SerializableState):
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "week", _integer(self.week, "week", 1, 1000000))
-        for name in ("source_id", "source_type", "evidence_type", "evidence_key"):
+        for name in ("source_id", "source_type", "source_family", "evidence_type", "evidence_key"):
             _non_empty(getattr(self, name), name)
         if self.trait not in PERSONALITY_TRAITS:
             raise ValueError(f"Unknown personality trait '{self.trait}'.")
@@ -227,8 +251,9 @@ class TraitEvidenceAccumulator(SerializableState):
     signed_evidence: float = 0.0
     evidence_weight: float = 0.0
     distinct_weeks: tuple[int, ...] = ()
-    source_types: tuple[str, ...] = ()
+    source_families: tuple[str, ...] = ()
     last_evidence_week: int = 0
+    last_updated_week: int = 0
 
     def __post_init__(self) -> None:
         if self.trait not in PERSONALITY_TRAITS:
@@ -237,8 +262,11 @@ class TraitEvidenceAccumulator(SerializableState):
         object.__setattr__(self, "evidence_weight", _finite(self.evidence_weight, "evidence_weight", 0.0, 100000.0))
         object.__setattr__(self, "distinct_weeks", tuple(_integer(week, "distinct_weeks", 1, 1000000) for week in self.distinct_weeks))
         _unique(tuple(str(week) for week in self.distinct_weeks), "distinct_weeks")
-        object.__setattr__(self, "source_types", _strings(self.source_types, "source_types"))
+        object.__setattr__(self, "source_families", _strings(self.source_families, "source_families"))
         object.__setattr__(self, "last_evidence_week", _integer(self.last_evidence_week, "last_evidence_week", 0, 1000000))
+        object.__setattr__(self, "last_updated_week", _integer(self.last_updated_week, "last_updated_week", 0, 1000000))
+        if self.last_evidence_week and self.last_updated_week and self.last_updated_week < self.last_evidence_week:
+            raise ValueError("Expected last_updated_week to be >= last_evidence_week.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,6 +296,7 @@ class PersonalityTraitChange(SerializableState):
 class AdaptationWeekRecord(SerializableState):
     week: int
     behavior_evidence: tuple[BehaviorEvidenceRecord, ...] = ()
+    processed_experience_ids: tuple[str, ...] = ()
     habit_candidate_changes: tuple[HabitCandidateChange, ...] = ()
     habit_strength_changes: tuple[HabitStrengthChange, ...] = ()
     routine_stability: RoutineStabilityRecord | None = None
@@ -277,6 +306,9 @@ class AdaptationWeekRecord(SerializableState):
     def __post_init__(self) -> None:
         object.__setattr__(self, "week", _integer(self.week, "week", 1, 1000000))
         object.__setattr__(self, "behavior_evidence", _typed(self.behavior_evidence, BehaviorEvidenceRecord, "behavior_evidence"))
+        _unique(tuple(record.decision_id for record in self.behavior_evidence), "behavior evidence decision_id")
+        object.__setattr__(self, "processed_experience_ids", _strings(self.processed_experience_ids, "processed_experience_ids"))
+        _unique(self.processed_experience_ids, "processed_experience_ids")
         object.__setattr__(self, "habit_candidate_changes", _typed(self.habit_candidate_changes, HabitCandidateChange, "habit_candidate_changes"))
         object.__setattr__(self, "habit_strength_changes", _typed(self.habit_strength_changes, HabitStrengthChange, "habit_strength_changes"))
         if self.routine_stability is not None and not isinstance(self.routine_stability, RoutineStabilityRecord):
@@ -300,7 +332,7 @@ class AdaptationHistory(SerializableState):
 @dataclass(frozen=True, slots=True)
 class AdaptationRuntimeState(SerializableState):
     history: AdaptationHistory = field(default_factory=AdaptationHistory)
-    personality_anchor: dict[str, float] | None = None
+    personality_anchor: PersonalityAnchor | dict[str, float] | None = None
     habit_candidates: tuple[HabitCandidateState, ...] = ()
     trait_accumulators: tuple[TraitEvidenceAccumulator, ...] = ()
     processed_weeks: tuple[int, ...] = ()
@@ -311,11 +343,17 @@ class AdaptationRuntimeState(SerializableState):
         if not isinstance(self.history, AdaptationHistory):
             raise TypeError("Expected adaptation history to be AdaptationHistory.")
         if self.personality_anchor is not None:
-            anchor = {}
-            for trait in PERSONALITY_TRAITS:
-                if trait not in self.personality_anchor:
-                    raise ValueError(f"Missing personality anchor trait '{trait}'.")
-                anchor[trait] = _finite(self.personality_anchor[trait], trait, 0.0, 1.0)
+            if isinstance(self.personality_anchor, PersonalityAnchor):
+                anchor = self.personality_anchor
+            elif isinstance(self.personality_anchor, dict):
+                values = {}
+                for trait in PERSONALITY_TRAITS:
+                    if trait not in self.personality_anchor:
+                        raise ValueError(f"Missing personality anchor trait '{trait}'.")
+                    values[trait] = self.personality_anchor[trait]
+                anchor = PersonalityAnchor(**values)
+            else:
+                raise TypeError("Expected personality_anchor to be PersonalityAnchor.")
             object.__setattr__(self, "personality_anchor", anchor)
         object.__setattr__(self, "habit_candidates", _typed(self.habit_candidates, HabitCandidateState, "habit_candidates"))
         _unique(tuple(candidate.habit_id for candidate in self.habit_candidates), "habit candidate id")
@@ -330,6 +368,22 @@ class AdaptationRuntimeState(SerializableState):
         _unique(self.processed_experience_ids, "processed_experience_ids")
         if tuple(record.week for record in self.history.records) != self.processed_weeks:
             raise ValueError("Expected processed adaptation weeks to match history.")
+        expected_behavior_ids = tuple(
+            dict.fromkeys(
+                evidence.decision_id
+                for record in self.history.records
+                for evidence in record.behavior_evidence
+            )
+        )
+        if self.processed_behavior_decision_ids != expected_behavior_ids:
+            raise ValueError("Expected processed behavior ids to match adaptation history evidence.")
+        expected_experience_ids = tuple(
+            experience_id
+            for record in self.history.records
+            for experience_id in record.processed_experience_ids
+        )
+        if self.processed_experience_ids != expected_experience_ids:
+            raise ValueError("Expected processed experience ids to match adaptation history.")
 
 
 def _finite(value: Any, name: str, minimum: float, maximum: float) -> float:

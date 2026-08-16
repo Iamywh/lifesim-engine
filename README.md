@@ -137,6 +137,8 @@ M11 observes completed weeks; it does not decide what Maya should do. Executed v
 
 Habit candidates are latent runtime state. One action does not create a habit; repeated distinct weeks can form a modest visible habit, and managed habits strengthen or weaken gradually from observable use or non-use. Legacy habits without observable definitions, such as Maya's morning planning and evening expense notes, are not decayed simply because M11 exists. `HabitsState.routine_stability` now moves gently from actual M7 routine execution and measures consistency, not virtue.
 
+M11 binds behavior evidence to the exact executed action record and chosen same-week M4 option. Observable non-use is based on options that were actually available in the M4 decision audit, not every option in a catalog. Personality evidence distinguishes analytical evidence type from causal source family, so a behavior tag and a choice metric from the same decision do not pretend to be independent sources.
+
 Personality changes slowly enough that one difficult month does not become an identity. M11 anchors the incoming personality on the first adaptation week, accumulates multi-week evidence by trait, applies evidence decay and confidence, and then moves 0..1 personality traits by tiny capped weekly deltas toward an anchor-bounded target. The transition runs last, after routine execution, so week-N decisions use the personality Maya had when week N began; any personality or habit changes can influence only later weeks.
 
 ## Test

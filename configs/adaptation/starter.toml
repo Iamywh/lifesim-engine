@@ -41,7 +41,6 @@ nonuse_decay_rate = 0.2
 formation_threshold = 8.0
 minimum_reinforcing_weeks = 3
 grace_weeks = 3
-contradiction_tags = ["social_recovery"]
 
 [[habits]]
 habit_id = "recovery_routine"
