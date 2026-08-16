@@ -390,11 +390,24 @@ class SocialConnection(SerializableState):
     name: str
     relationship: str
     closeness: float
+    connection_id: str = ""
+    trust: float | None = None
+    strain: float = 0.0
+    last_interaction_week: int = 0
 
     def __post_init__(self) -> None:
         _require_non_empty(self.name, "name")
         _require_non_empty(self.relationship, "relationship")
+        if not isinstance(self.connection_id, str):
+            raise TypeError("Expected 'connection_id' to be a string.")
+        if not self.connection_id:
+            object.__setattr__(self, "connection_id", self.name)
         _require_percent(self.closeness, "closeness")
+        if self.trust is None:
+            object.__setattr__(self, "trust", self.closeness)
+        _require_percent(self.trust, "trust")
+        _require_percent(self.strain, "strain")
+        _require_non_negative_integer(self.last_interaction_week, "last_interaction_week")
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,6 +420,12 @@ class SocialState(SerializableState):
         _require_percent(self.support_network_strength, "support_network_strength")
         _require_percent(self.city_familiarity, "city_familiarity")
         _freeze_tuple(self, "connections")
+        for connection in self.connections:
+            if not isinstance(connection, SocialConnection):
+                raise TypeError("Expected social connections to contain SocialConnection values.")
+        ids = tuple(connection.connection_id for connection in self.connections)
+        if len(ids) != len(set(ids)):
+            raise ValueError("Expected social connection IDs to be unique.")
 
 
 @dataclass(frozen=True, slots=True)

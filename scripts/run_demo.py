@@ -42,6 +42,13 @@ from lifesim.passive.engine import (
     RoutineExecutionTransition,
     RoutinePlanningTransition,
 )
+from lifesim.social.catalog import load_social_catalog
+from lifesim.social.engine import (
+    SocialEngine,
+    SocialExecutionTransition,
+    SocialMaintenanceTransition,
+    SocialPlanningTransition,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -87,6 +94,12 @@ def parse_args() -> argparse.Namespace:
         default=Path("configs/development/starter.toml"),
         help="Path to a development catalog TOML file used when an agent scenario is supplied.",
     )
+    parser.add_argument(
+        "--social-catalog",
+        type=Path,
+        default=Path("configs/social/starter.toml"),
+        help="Path to a social relationship catalog TOML file used when an agent scenario is supplied.",
+    )
     return parser.parse_args()
 
 
@@ -104,11 +117,16 @@ def main() -> None:
         )
         consequence_engine = ConsequenceEngine(consequence_catalog)
         learning_engine = LearningEngine()
-        routine_engine = RoutineEngine(load_routine_catalog(args.routine_catalog))
+        routine_catalog = load_routine_catalog(args.routine_catalog)
+        routine_engine = RoutineEngine(routine_catalog)
         employment_catalog = load_employment_catalog(args.employment_catalog)
         development_engine = DevelopmentEngine(
             load_development_catalog(args.development_catalog),
             employment_catalog=employment_catalog,
+        )
+        social_engine = SocialEngine(
+            load_social_catalog(args.social_catalog),
+            routine_catalog=routine_catalog,
         )
         decision_engine = DecisionEngine()
         transitions = (
@@ -116,8 +134,10 @@ def main() -> None:
             LearningTransition(learning_engine),
             EmploymentBoundaryTransition(EmploymentBoundaryEngine()),
             PassiveCashflowTransition(PassiveCashflowEngine()),
+            SocialMaintenanceTransition(social_engine),
             RoutinePlanningTransition(routine_engine, decision_engine),
             DevelopmentPlanningTransition(development_engine),
+            SocialPlanningTransition(social_engine),
             EmploymentMarketTransition(EmploymentMarketEngine(employment_catalog)),
             EventEngineTransition(EventEngine(event_catalog)),
             DecisionEngineTransition(decision_engine),
@@ -126,6 +146,7 @@ def main() -> None:
             LearningTransition(learning_engine),
             EmploymentWorkTransition(EmploymentWorkEngine()),
             DevelopmentExecutionTransition(development_engine),
+            SocialExecutionTransition(social_engine),
             RoutineExecutionTransition(routine_engine),
         )
     engine = LifeSimEngine(config, transitions=transitions)

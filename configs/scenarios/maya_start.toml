@@ -161,14 +161,22 @@ support_network_strength = 22.0
 city_familiarity = 18.0
 
 [[agent.social.connections]]
+connection_id = "lina"
 name = "Lina"
 relationship = "flatmate"
 closeness = 28.0
+trust = 28.0
+strain = 8.0
+last_interaction_week = 0
 
 [[agent.social.connections]]
+connection_id = "tomas"
 name = "Tomas"
 relationship = "friend_from_home"
 closeness = 63.0
+trust = 62.0
+strain = 5.0
+last_interaction_week = 0
 
 [agent.habits]
 routine_stability = 34.0

@@ -1,0 +1,111 @@
+[social_settings]
+base_new_encounter_probability = 0.22
+max_known_options = 2
+max_network_size = 12
+relisting_cooldown_weeks = 3
+
+[[contacts]]
+contact_id = "lina"
+name = "Lina"
+relationship = "flatmate"
+context = "existing"
+base_availability = 0.52
+proximity = 0.86
+responsiveness = 0.58
+volatility = 0.24
+supportiveness = 0.42
+neglect_resistance = 0.46
+initial_closeness = 28.0
+initial_trust = 28.0
+tags = ["home", "flatmate"]
+
+[[contacts]]
+contact_id = "tomas"
+name = "Tomas"
+relationship = "friend_from_home"
+context = "existing"
+base_availability = 0.38
+proximity = 0.18
+responsiveness = 0.72
+volatility = 0.12
+supportiveness = 0.68
+neglect_resistance = 0.82
+remote_contact = true
+initial_closeness = 63.0
+initial_trust = 62.0
+tags = ["remote", "support"]
+
+[[contacts]]
+contact_id = "noor"
+name = "Noor"
+relationship = "classmate"
+context = "education"
+base_availability = 0.36
+proximity = 0.72
+responsiveness = 0.54
+volatility = 0.18
+supportiveness = 0.46
+neglect_resistance = 0.36
+initial_closeness = 18.0
+initial_trust = 17.0
+tags = ["university", "study"]
+
+[[contacts]]
+contact_id = "marta"
+name = "Marta"
+relationship = "neighbor"
+context = "general"
+base_availability = 0.28
+proximity = 0.62
+responsiveness = 0.48
+volatility = 0.2
+supportiveness = 0.38
+neglect_resistance = 0.42
+initial_closeness = 15.0
+initial_trust = 14.0
+tags = ["neighborhood"]
+
+[[contacts]]
+contact_id = "eli"
+name = "Eli"
+relationship = "language_exchange_partner"
+context = "general"
+base_availability = 0.31
+proximity = 0.52
+responsiveness = 0.56
+volatility = 0.2
+supportiveness = 0.4
+neglect_resistance = 0.5
+initial_closeness = 16.0
+initial_trust = 15.0
+tags = ["language", "city"]
+
+[[contacts]]
+contact_id = "sven"
+name = "Sven"
+relationship = "coworker_contact"
+context = "employment"
+base_availability = 0.26
+proximity = 0.5
+responsiveness = 0.46
+volatility = 0.22
+supportiveness = 0.34
+neglect_resistance = 0.34
+initial_closeness = 14.0
+initial_trust = 13.0
+tags = ["work"]
+
+[[contacts]]
+contact_id = "iris"
+name = "Iris"
+relationship = "community_event_contact"
+context = "general"
+base_availability = 0.3
+proximity = 0.58
+responsiveness = 0.52
+volatility = 0.26
+supportiveness = 0.44
+neglect_resistance = 0.38
+initial_closeness = 17.0
+initial_trust = 15.0
+tags = ["community", "social"]

@@ -22,6 +22,7 @@ class WeeklyContext:
     passive_records: tuple[Any, ...] = ()
     employment_records: tuple[Any, ...] = ()
     development_records: tuple[Any, ...] = ()
+    social_records: tuple[Any, ...] = ()
     event_history: Any | None = None
     decision_history: Any | None = None
     consequence_runtime: Any | None = None
@@ -29,6 +30,7 @@ class WeeklyContext:
     passive_runtime: Any | None = None
     employment_runtime: Any | None = None
     development_runtime: Any | None = None
+    social_runtime: Any | None = None
 
     def __post_init__(self) -> None:
         if self.week < 1:
@@ -40,6 +42,7 @@ class WeeklyContext:
         object.__setattr__(self, "passive_records", tuple(self.passive_records))
         object.__setattr__(self, "employment_records", tuple(self.employment_records))
         object.__setattr__(self, "development_records", tuple(self.development_records))
+        object.__setattr__(self, "social_records", tuple(self.social_records))
 
     @property
     def week_start(self) -> date:
@@ -76,6 +79,7 @@ class WeeklyTransitionResult:
     passive_records: tuple[Any, ...] = ()
     employment_records: tuple[Any, ...] = ()
     development_records: tuple[Any, ...] = ()
+    social_records: tuple[Any, ...] = ()
     event_history: Any | None = None
     decision_history: Any | None = None
     consequence_runtime: Any | None = None
@@ -83,6 +87,7 @@ class WeeklyTransitionResult:
     passive_runtime: Any | None = None
     employment_runtime: Any | None = None
     development_runtime: Any | None = None
+    social_runtime: Any | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "events", tuple(self.events))
@@ -93,6 +98,7 @@ class WeeklyTransitionResult:
         object.__setattr__(self, "passive_records", tuple(self.passive_records))
         object.__setattr__(self, "employment_records", tuple(self.employment_records))
         object.__setattr__(self, "development_records", tuple(self.development_records))
+        object.__setattr__(self, "social_records", tuple(self.social_records))
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +139,7 @@ class WeeklyPipeline:
         passive_records: list[Any] = []
         employment_records: list[Any] = []
         development_records: list[Any] = []
+        social_records: list[Any] = []
         event_history = context.event_history
         decision_history = context.decision_history
         consequence_runtime = context.consequence_runtime
@@ -140,6 +147,7 @@ class WeeklyPipeline:
         passive_runtime = context.passive_runtime
         employment_runtime = context.employment_runtime
         development_runtime = context.development_runtime
+        social_runtime = context.social_runtime
 
         for transition in self._transitions:
             candidate = transition.apply(next_state, context)
@@ -162,6 +170,7 @@ class WeeklyPipeline:
             passive_records.extend(result.passive_records)
             employment_records.extend(result.employment_records)
             development_records.extend(result.development_records)
+            social_records.extend(result.social_records)
             if result.events:
                 context = replace(context, events=tuple(events))
             if result.decisions:
@@ -176,6 +185,8 @@ class WeeklyPipeline:
                 context = replace(context, employment_records=tuple(employment_records))
             if result.development_records:
                 context = replace(context, development_records=tuple(development_records))
+            if result.social_records:
+                context = replace(context, social_records=tuple(social_records))
             if result.event_history is not None:
                 event_history = result.event_history
                 context = replace(context, event_history=event_history)
@@ -197,6 +208,9 @@ class WeeklyPipeline:
             if result.development_runtime is not None:
                 development_runtime = result.development_runtime
                 context = replace(context, development_runtime=development_runtime)
+            if result.social_runtime is not None:
+                social_runtime = result.social_runtime
+                context = replace(context, social_runtime=social_runtime)
 
         if next_state is state:
             next_state = replace(state)
@@ -210,6 +224,7 @@ class WeeklyPipeline:
             passive_records=tuple(passive_records),
             employment_records=tuple(employment_records),
             development_records=tuple(development_records),
+            social_records=tuple(social_records),
             event_history=event_history,
             decision_history=decision_history,
             consequence_runtime=consequence_runtime,
@@ -217,4 +232,5 @@ class WeeklyPipeline:
             passive_runtime=passive_runtime,
             employment_runtime=employment_runtime,
             development_runtime=development_runtime,
+            social_runtime=social_runtime,
         )
