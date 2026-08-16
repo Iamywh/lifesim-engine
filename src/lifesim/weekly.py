@@ -20,11 +20,13 @@ class WeeklyContext:
     consequences: tuple[Any, ...] = ()
     learning_records: tuple[Any, ...] = ()
     passive_records: tuple[Any, ...] = ()
+    employment_records: tuple[Any, ...] = ()
     event_history: Any | None = None
     decision_history: Any | None = None
     consequence_runtime: Any | None = None
     learning_runtime: Any | None = None
     passive_runtime: Any | None = None
+    employment_runtime: Any | None = None
 
     def __post_init__(self) -> None:
         if self.week < 1:
@@ -34,6 +36,7 @@ class WeeklyContext:
         object.__setattr__(self, "consequences", tuple(self.consequences))
         object.__setattr__(self, "learning_records", tuple(self.learning_records))
         object.__setattr__(self, "passive_records", tuple(self.passive_records))
+        object.__setattr__(self, "employment_records", tuple(self.employment_records))
 
     @property
     def week_start(self) -> date:
@@ -68,11 +71,13 @@ class WeeklyTransitionResult:
     consequences: tuple[Any, ...] = ()
     learning_records: tuple[Any, ...] = ()
     passive_records: tuple[Any, ...] = ()
+    employment_records: tuple[Any, ...] = ()
     event_history: Any | None = None
     decision_history: Any | None = None
     consequence_runtime: Any | None = None
     learning_runtime: Any | None = None
     passive_runtime: Any | None = None
+    employment_runtime: Any | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "events", tuple(self.events))
@@ -81,6 +86,7 @@ class WeeklyTransitionResult:
         object.__setattr__(self, "consequences", tuple(self.consequences))
         object.__setattr__(self, "learning_records", tuple(self.learning_records))
         object.__setattr__(self, "passive_records", tuple(self.passive_records))
+        object.__setattr__(self, "employment_records", tuple(self.employment_records))
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,11 +125,13 @@ class WeeklyPipeline:
         consequences: list[Any] = []
         learning_records: list[Any] = []
         passive_records: list[Any] = []
+        employment_records: list[Any] = []
         event_history = context.event_history
         decision_history = context.decision_history
         consequence_runtime = context.consequence_runtime
         learning_runtime = context.learning_runtime
         passive_runtime = context.passive_runtime
+        employment_runtime = context.employment_runtime
 
         for transition in self._transitions:
             candidate = transition.apply(next_state, context)
@@ -144,6 +152,7 @@ class WeeklyPipeline:
             consequences.extend(result.consequences)
             learning_records.extend(result.learning_records)
             passive_records.extend(result.passive_records)
+            employment_records.extend(result.employment_records)
             if result.events:
                 context = replace(context, events=tuple(events))
             if result.decisions:
@@ -154,6 +163,8 @@ class WeeklyPipeline:
                 context = replace(context, learning_records=tuple(learning_records))
             if result.passive_records:
                 context = replace(context, passive_records=tuple(passive_records))
+            if result.employment_records:
+                context = replace(context, employment_records=tuple(employment_records))
             if result.event_history is not None:
                 event_history = result.event_history
                 context = replace(context, event_history=event_history)
@@ -169,6 +180,9 @@ class WeeklyPipeline:
             if result.passive_runtime is not None:
                 passive_runtime = result.passive_runtime
                 context = replace(context, passive_runtime=passive_runtime)
+            if result.employment_runtime is not None:
+                employment_runtime = result.employment_runtime
+                context = replace(context, employment_runtime=employment_runtime)
 
         if next_state is state:
             next_state = replace(state)
@@ -180,9 +194,11 @@ class WeeklyPipeline:
             consequences=tuple(consequences),
             learning_records=tuple(learning_records),
             passive_records=tuple(passive_records),
+            employment_records=tuple(employment_records),
             event_history=event_history,
             decision_history=decision_history,
             consequence_runtime=consequence_runtime,
             learning_runtime=learning_runtime,
             passive_runtime=passive_runtime,
+            employment_runtime=employment_runtime,
         )

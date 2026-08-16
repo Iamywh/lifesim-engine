@@ -55,6 +55,8 @@ class IncomeStream(SerializableState):
     cadence: str
     reliability: float
     due_day: int = 1
+    source_type: str = "generic"
+    source_id: str = ""
 
     def __post_init__(self) -> None:
         _require_non_empty(self.name, "name")
@@ -62,6 +64,11 @@ class IncomeStream(SerializableState):
         _require_cadence(self.cadence, "cadence")
         _require_bounded(self.reliability, "reliability", minimum=0.0, maximum=1.0)
         _require_day(self.due_day, "due_day")
+        _require_non_empty(self.source_type, "source_type")
+        if not isinstance(self.source_id, str):
+            raise TypeError("Expected 'source_id' to be a string.")
+        if self.source_type == "employment":
+            _require_non_empty(self.source_id, "source_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,11 +308,81 @@ class EmploymentState(SerializableState):
     employer: str
     weekly_hours: float
     job_search_intensity: float
+    source_job_id: str = ""
+    source_job_version: str = ""
+    contract_id: str = ""
+    contract_type: str = ""
+    hourly_rate: Decimal = Decimal("0.00")
+    stability: float = 0.0
+    physical_demand: float = 0.0
+    mental_demand: float = 0.0
+    social_demand: float = 0.0
+    start_week: int = 0
+    tenure_weeks: int = 0
+    end_week_exclusive: int = 0
 
     def __post_init__(self) -> None:
         _require_non_empty(self.status, "status")
         _require_bounded(self.weekly_hours, "weekly_hours", minimum=0.0, maximum=168.0)
         _require_percent(self.job_search_intensity, "job_search_intensity")
+        for name in (
+            "role_title",
+            "employer",
+            "source_job_id",
+            "source_job_version",
+            "contract_id",
+            "contract_type",
+        ):
+            if not isinstance(getattr(self, name), str):
+                raise TypeError(f"Expected '{name}' to be a string.")
+        _require_money(self.hourly_rate, "hourly_rate")
+        _require_bounded(self.stability, "stability", minimum=0.0, maximum=1.0)
+        _require_bounded(self.physical_demand, "physical_demand", minimum=0.0, maximum=1.0)
+        _require_bounded(self.mental_demand, "mental_demand", minimum=0.0, maximum=1.0)
+        _require_bounded(self.social_demand, "social_demand", minimum=0.0, maximum=1.0)
+        _require_non_negative_integer(self.start_week, "start_week")
+        _require_non_negative_integer(self.tenure_weeks, "tenure_weeks")
+        _require_non_negative_integer(self.end_week_exclusive, "end_week_exclusive")
+        if self.status == "employed":
+            for name in (
+                "role_title",
+                "employer",
+                "source_job_id",
+                "source_job_version",
+                "contract_id",
+                "contract_type",
+            ):
+                _require_non_empty(getattr(self, name), name)
+            if self.weekly_hours <= 0:
+                raise ValueError("Expected employed weekly_hours to be > 0.")
+            if self.hourly_rate <= Decimal(0):
+                raise ValueError("Expected employed hourly_rate to be > 0.")
+            if self.start_week <= 0:
+                raise ValueError("Expected employed start_week to be > 0.")
+            if self.end_week_exclusive and self.end_week_exclusive <= self.start_week:
+                raise ValueError("Expected employed end_week_exclusive to be 0 or after start_week.")
+        else:
+            if self.weekly_hours != 0:
+                raise ValueError("Expected non-employed weekly_hours to be 0.")
+            stale_fields = (
+                self.role_title,
+                self.employer,
+                self.source_job_id,
+                self.source_job_version,
+                self.contract_id,
+                self.contract_type,
+            )
+            if any(stale_fields):
+                raise ValueError("Expected non-employed contract text fields to be empty.")
+            if self.hourly_rate != Decimal("0.00") or self.stability != 0.0:
+                raise ValueError("Expected non-employed contract terms to be empty.")
+            if any(
+                value != 0.0
+                for value in (self.physical_demand, self.mental_demand, self.social_demand)
+            ):
+                raise ValueError("Expected non-employed work demands to be 0.")
+            if self.start_week or self.tenure_weeks or self.end_week_exclusive:
+                raise ValueError("Expected non-employed timing fields to be 0.")
 
 
 @dataclass(frozen=True, slots=True)

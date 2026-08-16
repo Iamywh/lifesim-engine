@@ -21,6 +21,7 @@ class SimulationState:
     consequences: tuple[Any, ...] = ()
     learning_records: tuple[Any, ...] = ()
     passive_records: tuple[Any, ...] = ()
+    employment_records: tuple[Any, ...] = ()
 
     def __post_init__(self) -> None:
         if self.week < 0:
@@ -31,6 +32,7 @@ class SimulationState:
         object.__setattr__(self, "consequences", tuple(self.consequences))
         object.__setattr__(self, "learning_records", tuple(self.learning_records))
         object.__setattr__(self, "passive_records", tuple(self.passive_records))
+        object.__setattr__(self, "employment_records", tuple(self.employment_records))
 
     def to_dict(self) -> dict[str, Any]:
         output = {
@@ -48,6 +50,9 @@ class SimulationState:
             ]
             output["passive_records"] = [
                 record.to_dict() for record in self.passive_records
+            ]
+            output["employment_records"] = [
+                record.to_dict() for record in self.employment_records
             ]
         if self.event_traces:
             output["event_traces"] = [trace.to_dict() for trace in self.event_traces]
@@ -67,6 +72,7 @@ class SimulationResult:
     pending_scheduled_effects: tuple[Any, ...] = ()
     learning_history: Any | None = None
     passive_history: Any | None = None
+    employment_history: Any | None = None
 
     def __post_init__(self) -> None:
         weeks = tuple(state.week for state in self.states)
@@ -103,6 +109,8 @@ class SimulationResult:
             output["learning_history"] = self.learning_history.to_dict()
         if self.passive_history is not None:
             output["passive_history"] = self.passive_history.to_dict()
+        if self.employment_history is not None:
+            output["employment_history"] = self.employment_history.to_dict()
         return output
 
 
@@ -129,6 +137,7 @@ class LifeSimEngine:
         consequence_runtime = None
         learning_runtime = None
         passive_runtime = None
+        employment_runtime = None
 
         if initial_agent is None:
             for week in range(1, self._config.simulation.duration_weeks + 1):
@@ -152,6 +161,7 @@ class LifeSimEngine:
                     consequence_runtime=consequence_runtime,
                     learning_runtime=learning_runtime,
                     passive_runtime=passive_runtime,
+                    employment_runtime=employment_runtime,
                 )
                 transition_result = self._pipeline.advance(previous_agent, context)
                 next_agent = transition_result.agent_state
@@ -165,6 +175,8 @@ class LifeSimEngine:
                     learning_runtime = transition_result.learning_runtime
                 if transition_result.passive_runtime is not None:
                     passive_runtime = transition_result.passive_runtime
+                if transition_result.employment_runtime is not None:
+                    employment_runtime = transition_result.employment_runtime
                 states.append(
                     SimulationState(
                         week=week,
@@ -175,6 +187,7 @@ class LifeSimEngine:
                         consequences=transition_result.consequences,
                         learning_records=transition_result.learning_records,
                         passive_records=transition_result.passive_records,
+                        employment_records=transition_result.employment_records,
                     )
                 )
                 summaries.append(
@@ -197,6 +210,9 @@ class LifeSimEngine:
         passive_history = None
         if passive_runtime is not None:
             passive_history = passive_runtime.history
+        employment_history = None
+        if employment_runtime is not None:
+            employment_history = employment_runtime.history
 
         return SimulationResult(
             name=self._config.simulation.name,
@@ -210,4 +226,5 @@ class LifeSimEngine:
             pending_scheduled_effects=pending_scheduled_effects,
             learning_history=learning_history,
             passive_history=passive_history,
+            employment_history=employment_history,
         )

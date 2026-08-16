@@ -92,6 +92,8 @@ class EventOption(SerializableState):
     availability_conditions: tuple[EventCondition, ...] = ()
     estimated_cost: Decimal = Decimal("0.00")
     requires_full_estimated_cost: bool = True
+    expected_weekly_financial_gain: Decimal = Decimal("0.00")
+    ongoing_weekly_time_hours: float = 0.0
     time_cost_hours: float = 0.0
     energy_cost: float = 0.0
     short_term_value: float = 0.0
@@ -118,6 +120,17 @@ class EventOption(SerializableState):
         _money(self.estimated_cost, "estimated_cost")
         if not isinstance(self.requires_full_estimated_cost, bool):
             raise TypeError("Expected requires_full_estimated_cost to be bool.")
+        _money(self.expected_weekly_financial_gain, "expected_weekly_financial_gain")
+        object.__setattr__(
+            self,
+            "ongoing_weekly_time_hours",
+            _finite_number(
+                self.ongoing_weekly_time_hours,
+                "ongoing_weekly_time_hours",
+                minimum=0.0,
+                maximum=168.0,
+            ),
+        )
         object.__setattr__(
             self,
             "time_cost_hours",
