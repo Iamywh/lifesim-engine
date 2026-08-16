@@ -1,0 +1,158 @@
+[[skills]]
+skill_name = "customer service"
+category = "work"
+learning_rate = 0.72
+practice_xp_per_hour = 1.0
+work_xp_per_hour = 1.15
+
+[[skills]]
+skill_name = "basic budgeting"
+category = "life"
+learning_rate = 0.68
+practice_xp_per_hour = 0.95
+work_xp_per_hour = 0.7
+
+[[skills]]
+skill_name = "spreadsheets"
+category = "work"
+learning_rate = 0.82
+practice_xp_per_hour = 1.25
+work_xp_per_hour = 0.9
+
+[[skills]]
+skill_name = "local language"
+category = "language"
+learning_rate = 0.74
+practice_xp_per_hour = 1.1
+work_xp_per_hour = 0.85
+
+[[skills]]
+skill_name = "research"
+category = "academic"
+learning_rate = 0.78
+practice_xp_per_hour = 1.2
+work_xp_per_hour = 0.55
+
+[[skills]]
+skill_name = "written communication"
+category = "academic"
+learning_rate = 0.76
+practice_xp_per_hour = 1.1
+work_xp_per_hour = 0.7
+
+[[education_programs]]
+program = "Urban Studies BA"
+progress_per_full_study_week = 1.6
+
+[[education_programs.curriculum]]
+skill_name = "research"
+weight = 0.45
+
+[[education_programs.curriculum]]
+skill_name = "written communication"
+weight = 0.35
+
+[[education_programs.curriculum]]
+skill_name = "spreadsheets"
+weight = 0.20
+
+[[profiles]]
+profile_id = "balanced_study"
+label = "Balanced study"
+summary = "Keep up with university work and leave room for normal life."
+education_hours = 16.0
+energy_cost = 24.0
+short_term_value = -0.05
+future_value = 0.45
+perceived_risk = 0.16
+uncertainty = 0.18
+autonomy_value = 0.04
+learning_value = 0.55
+health_value = -0.06
+comfort_value = -0.08
+goal_tags = ["education", "stability"]
+
+[[profiles.practice]]
+skill_name = "written communication"
+hours = 2.0
+
+[[profiles]]
+profile_id = "intensive_study"
+label = "Intensive study"
+summary = "Push hard on coursework and accept a heavier week."
+education_hours = 24.0
+energy_cost = 42.0
+short_term_value = -0.18
+future_value = 0.68
+perceived_risk = 0.28
+uncertainty = 0.22
+autonomy_value = -0.04
+learning_value = 0.78
+health_value = -0.14
+comfort_value = -0.22
+goal_tags = ["education", "achievement"]
+
+[[profiles.practice]]
+skill_name = "research"
+hours = 3.0
+
+[[profiles]]
+profile_id = "reduced_study"
+label = "Reduced study"
+summary = "Do enough to stay connected while protecting energy."
+education_hours = 8.0
+energy_cost = 10.0
+short_term_value = 0.12
+future_value = 0.12
+perceived_risk = 0.14
+uncertainty = 0.12
+autonomy_value = 0.16
+learning_value = 0.18
+health_value = 0.08
+comfort_value = 0.22
+goal_tags = ["education", "recovery"]
+
+[[profiles]]
+profile_id = "admin_skill_focus"
+label = "Admin skill focus"
+summary = "Study a normal amount and practice practical admin tools."
+education_hours = 12.0
+energy_cost = 26.0
+short_term_value = -0.06
+future_value = 0.48
+perceived_risk = 0.18
+uncertainty = 0.2
+autonomy_value = 0.08
+learning_value = 0.62
+health_value = -0.08
+comfort_value = -0.1
+goal_tags = ["education", "career", "skills"]
+
+[[profiles.practice]]
+skill_name = "spreadsheets"
+hours = 5.0
+
+[[profiles.practice]]
+skill_name = "basic budgeting"
+hours = 2.0
+
+[[profiles]]
+profile_id = "language_skill_focus"
+label = "Language focus"
+summary = "Blend coursework with local-language practice."
+education_hours = 12.0
+energy_cost = 24.0
+short_term_value = -0.04
+future_value = 0.42
+perceived_risk = 0.16
+uncertainty = 0.18
+social_value = 0.14
+autonomy_value = 0.1
+learning_value = 0.58
+health_value = -0.06
+comfort_value = -0.08
+goal_tags = ["education", "language", "belonging"]
+
+[[profiles.practice]]
+skill_name = "local language"
+hours = 5.0
