@@ -660,6 +660,11 @@ def _known_option(
         health_value=0.05,
         comfort_value=comfort,
         goal_tags=("social", "belonging"),
+        behavior_tags=(
+            ("support_seeking", "social_outreach")
+            if action == "seek_support"
+            else ("social_outreach",)
+        ),
         requires_full_estimated_cost=False,
     )
 
@@ -757,6 +762,7 @@ def _encounter_option(definition: SocialContactDefinition) -> EventOption:
         learning_value=0.05,
         comfort_value=-0.02,
         goal_tags=("social", "city"),
+        behavior_tags=("social_exploration",),
         requires_full_estimated_cost=False,
     )
 
@@ -777,6 +783,7 @@ def _keep_light_option() -> EventOption:
         autonomy_value=0.25,
         comfort_value=0.18,
         goal_tags=("autonomy", "recovery"),
+        behavior_tags=("social_recovery",),
         requires_full_estimated_cost=False,
     )
 

@@ -231,6 +231,7 @@ def _profile_option(profile: DevelopmentProfile) -> EventOption:
         health_value=profile.health_value,
         comfort_value=profile.comfort_value,
         goal_tags=profile.goal_tags,
+        behavior_tags=profile.behavior_tags,
         requires_full_estimated_cost=False,
     )
 

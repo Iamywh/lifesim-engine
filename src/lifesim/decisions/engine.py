@@ -174,6 +174,7 @@ def _score_components(
     recurring_time_ratio = option.ongoing_weekly_time_hours / 168.0
     committed_time_modifier = _committed_time_modifier(state)
     goal_signal = _goal_alignment_signal(state, option)
+    habit_signal = _habit_familiarity_signal(state, option)
 
     specs = (
         (
@@ -260,6 +261,11 @@ def _score_components(
             "memory_experience",
             memory_signal,
             0.45 + personality.conscientiousness * 0.15 + min(0.15, context.week * 0.005),
+        ),
+        (
+            "habit_familiarity",
+            habit_signal,
+            0.18,
         ),
     )
     return tuple(
@@ -364,6 +370,22 @@ def _goal_alignment_signal(state: AgentState, option: EventOption) -> float:
     )
     score = sum(goal.priority / 5.0 for goal in goals if _goal_matches(goal, option_tags))
     return min(1.0, score / 3.0)
+
+
+def _habit_familiarity_signal(state: AgentState, option: EventOption) -> float:
+    if not option.behavior_tags:
+        return 0.0
+    option_tags = set(option.behavior_tags)
+    matching_strengths = [
+        habit.strength / 100.0
+        for habit in state.habits.items
+        if habit.behavior_tags and option_tags.intersection(habit.behavior_tags)
+    ]
+    if not matching_strengths:
+        return 0.0
+    strongest = max(matching_strengths)
+    stability_bonus = state.habits.routine_stability / 100.0 * 0.12
+    return round(max(0.0, min(1.0, strongest * 0.88 + stability_bonus)), 12)
 
 
 def _goal_matches(goal: GoalItem, option_tags: set[str]) -> bool:

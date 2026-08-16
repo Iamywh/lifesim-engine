@@ -24,6 +24,7 @@ class SimulationState:
     employment_records: tuple[Any, ...] = ()
     development_records: tuple[Any, ...] = ()
     social_records: tuple[Any, ...] = ()
+    adaptation_records: tuple[Any, ...] = ()
 
     def __post_init__(self) -> None:
         if self.week < 0:
@@ -37,6 +38,7 @@ class SimulationState:
         object.__setattr__(self, "employment_records", tuple(self.employment_records))
         object.__setattr__(self, "development_records", tuple(self.development_records))
         object.__setattr__(self, "social_records", tuple(self.social_records))
+        object.__setattr__(self, "adaptation_records", tuple(self.adaptation_records))
 
     def to_dict(self) -> dict[str, Any]:
         output = {
@@ -64,6 +66,9 @@ class SimulationState:
             output["social_records"] = [
                 record.to_dict() for record in self.social_records
             ]
+            output["adaptation_records"] = [
+                record.to_dict() for record in self.adaptation_records
+            ]
         if self.event_traces:
             output["event_traces"] = [trace.to_dict() for trace in self.event_traces]
         return output
@@ -85,6 +90,8 @@ class SimulationResult:
     employment_history: Any | None = None
     development_history: Any | None = None
     social_history: Any | None = None
+    adaptation_history: Any | None = None
+    adaptation_runtime: Any | None = None
 
     def __post_init__(self) -> None:
         weeks = tuple(state.week for state in self.states)
@@ -127,6 +134,10 @@ class SimulationResult:
             output["development_history"] = self.development_history.to_dict()
         if self.social_history is not None:
             output["social_history"] = self.social_history.to_dict()
+        if self.adaptation_history is not None:
+            output["adaptation_history"] = self.adaptation_history.to_dict()
+        if self.adaptation_runtime is not None:
+            output["adaptation_runtime"] = self.adaptation_runtime.to_dict()
         return output
 
 
@@ -156,6 +167,7 @@ class LifeSimEngine:
         employment_runtime = None
         development_runtime = None
         social_runtime = None
+        adaptation_runtime = None
 
         if initial_agent is None:
             for week in range(1, self._config.simulation.duration_weeks + 1):
@@ -182,6 +194,7 @@ class LifeSimEngine:
                     employment_runtime=employment_runtime,
                     development_runtime=development_runtime,
                     social_runtime=social_runtime,
+                    adaptation_runtime=adaptation_runtime,
                 )
                 transition_result = self._pipeline.advance(previous_agent, context)
                 next_agent = transition_result.agent_state
@@ -201,6 +214,8 @@ class LifeSimEngine:
                     development_runtime = transition_result.development_runtime
                 if transition_result.social_runtime is not None:
                     social_runtime = transition_result.social_runtime
+                if transition_result.adaptation_runtime is not None:
+                    adaptation_runtime = transition_result.adaptation_runtime
                 states.append(
                     SimulationState(
                         week=week,
@@ -214,6 +229,7 @@ class LifeSimEngine:
                         employment_records=transition_result.employment_records,
                         development_records=transition_result.development_records,
                         social_records=transition_result.social_records,
+                        adaptation_records=transition_result.adaptation_records,
                     )
                 )
                 summaries.append(
@@ -245,6 +261,9 @@ class LifeSimEngine:
         social_history = None
         if social_runtime is not None:
             social_history = social_runtime.history
+        adaptation_history = None
+        if adaptation_runtime is not None:
+            adaptation_history = adaptation_runtime.history
 
         return SimulationResult(
             name=self._config.simulation.name,
@@ -261,4 +280,6 @@ class LifeSimEngine:
             employment_history=employment_history,
             development_history=development_history,
             social_history=social_history,
+            adaptation_history=adaptation_history,
+            adaptation_runtime=adaptation_runtime,
         )

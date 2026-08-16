@@ -35,6 +35,7 @@ class RoutineProfile(SerializableState):
     social_contact: float
     physical_activity: float
     recovery_intensity: float
+    behavior_tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.profile_id, "profile_id")
@@ -67,6 +68,7 @@ class RoutineProfile(SerializableState):
         for name in ("social_contact", "physical_activity", "recovery_intensity"):
             object.__setattr__(self, name, _finite_number(getattr(self, name), name, minimum=0.0, maximum=1.0))
         object.__setattr__(self, "goal_tags", _string_sequence(self.goal_tags, "goal_tags"))
+        object.__setattr__(self, "behavior_tags", _string_sequence(self.behavior_tags, "behavior_tags"))
 
 
 @dataclass(frozen=True, slots=True)
