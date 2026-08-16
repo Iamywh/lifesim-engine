@@ -1,6 +1,6 @@
 # LifeSim Engine
 
-LifeSim Engine is a deterministic simulation core for life-simulation experiments. M0 established the Python package skeleton and deterministic configuration. M1 added reusable composed agent state and a Maya starting scenario. M2 integrates those pieces with a generic weekly loop that can carry an agent state from week 0 through `duration_weeks`. M3 adds a reusable event engine for deterministic, state-conditioned weekly occurrences. M4 adds a transparent decision engine that chooses among event options. M5 adds a consequence engine that applies actual state changes and delayed effects from chosen decisions. M6 adds memory and learning so experienced consequences can influence future decisions. M7 adds passive life and routine state so ordinary weeks can still advance Maya's money, needs, health, and mental load. M8 adds a deterministic employment market, hiring pipeline, contracts, wages, and weekly work effects. M9 adds zero-RNG skills and education development through M4 weekly development choices. M10 adds deterministic, auditable individual social relationships while leaving aggregate routine social exposure with M7. M11 adds zero-RNG habit formation and very slow anchored personality adaptation from executed voluntary behavior.
+LifeSim Engine is a deterministic simulation core for life-simulation experiments. M0 established the Python package skeleton and deterministic configuration. M1 added reusable composed agent state and a Maya starting scenario. M2 integrates those pieces with a generic weekly loop that can carry an agent state from week 0 through `duration_weeks`. M3 adds a reusable event engine for deterministic, state-conditioned weekly occurrences. M4 adds a transparent decision engine that chooses among event options. M5 adds a consequence engine that applies actual state changes and delayed effects from chosen decisions. M6 adds memory and learning so experienced consequences can influence future decisions. M7 adds passive life and routine state so ordinary weeks can still advance Maya's money, needs, health, and mental load. M8 adds a deterministic employment market, hiring pipeline, contracts, wages, and weekly work effects. M9 adds zero-RNG skills and education development through M4 weekly development choices. M10 adds deterministic, auditable individual social relationships while leaving aggregate routine social exposure with M7. M11 adds zero-RNG habit formation and very slow anchored personality adaptation from executed voluntary behavior. M12 adds explicit financial charge settlement, a canonical Maya v1 engine builder, expanded starter world events, and a deterministic calibration harness.
 
 ## Requirements
 
@@ -29,9 +29,9 @@ To run Maya through the weekly engine with starter events, decisions, and conseq
 python scripts/run_demo.py --config configs/default.toml --agent-scenario configs/scenarios/maya_start.toml --event-catalog configs/events/starter.toml --consequence-catalog configs/consequences/starter.toml --routine-catalog configs/routines/starter.toml --employment-catalog configs/employment/starter.toml --development-catalog configs/development/starter.toml --social-catalog configs/social/starter.toml --adaptation-catalog configs/adaptation/starter.toml
 ```
 
-Maya-specific values live in `configs/scenarios/maya_start.toml`; the core engine and agent model remain reusable for future characters. Event definitions and perceived decision options live in data under `configs/events/`; real outcome definitions live separately under `configs/consequences/`; weekly routine profiles live under `configs/routines/`; employment opportunities live under `configs/employment/`; development skills, education programs, and weekly study/practice profiles live under `configs/development/`; social contact definitions and new-acquaintance opportunities live under `configs/social/`; habit and trait adaptation rules live under `configs/adaptation/`. When an agent scenario is supplied, each weekly simulation snapshot includes the complete serialized `AgentState` plus that week's event occurrences, event selection traces, decisions, score traces, consequence records, learning records, passive life records, employment records, development records, social records, and adaptation records.
+Maya-specific values live in `configs/scenarios/maya_start.toml`; the canonical Maya v1 run config lives in `configs/canonical/maya_v1.toml`. The core engine and agent model remain reusable for future characters. Event definitions and perceived decision options live in data under `configs/events/`; real outcome definitions live separately under `configs/consequences/`; weekly routine profiles live under `configs/routines/`; employment opportunities live under `configs/employment/`; development skills, education programs, and weekly study/practice profiles live under `configs/development/`; social contact definitions and new-acquaintance opportunities live under `configs/social/`; habit and trait adaptation rules live under `configs/adaptation/`. When an agent scenario is supplied, each weekly simulation snapshot includes the complete serialized `AgentState` plus that week's event occurrences, event selection traces, decisions, score traces, consequence records, learning records, passive life records, employment records, development records, social records, and adaptation records.
 
-M1 stores monetary scenario values as quoted decimal strings in TOML, parses them to `Decimal`, and serializes them back to exact strings for future checkpoints and JSON logs. M5 uses the same exact Decimal handling for monetary consequence deltas, and M8 uses it for hourly rates and weekly wages. Maya is also represented with state-only education, health, mental, personality, finance, memory, and skill components; no relationship-specific, promotion, performance-review, personality, or habit evolution logic runs yet.
+M1 stores monetary scenario values as quoted decimal strings in TOML, parses them to `Decimal`, and serializes them back to exact strings for future checkpoints and JSON logs. M5 uses the same exact Decimal handling for monetary consequence deltas, M8 uses it for hourly rates and weekly wages, and M12 uses it for explicit financial charges. Maya is also represented with state-only education, health, mental, personality, finance, memory, and skill components.
 
 ## Weekly Lifecycle
 
@@ -58,6 +58,7 @@ weekly work effects
 development execution and education/skill progress
 individual social interaction execution
 routine execution and passive routine effects
+arrear settlement after routine spending
 habit and personality adaptation from completed week evidence
 ```
 
@@ -71,11 +72,13 @@ M4 decisions choose among structured `EventOption` records attached to event occ
 
 ## Consequence Engine
 
-M5 consequences are actual outcomes keyed by `event_id`, `event_version`, and `option_id` in a separate consequence catalog. The Decision Engine never inspects these real effects. Consequences can apply immediate additive state deltas, select one deterministic weighted actual outcome branch, or schedule delayed effects for future weeks. Writable paths are explicitly allowlisted; identity, personality, memory, skills, employment, goals, and relationship-specific state are excluded from M5.
+M5 consequences are actual outcomes keyed by `event_id`, `event_version`, and `option_id` in a separate consequence catalog. The Decision Engine never inspects these real effects. Consequences can apply immediate additive state deltas, select one deterministic weighted actual outcome branch, schedule delayed effects for future weeks, or apply explicit M12 financial charges. Writable paths are explicitly allowlisted; identity, personality, memory, skills, employment, goals, and relationship-specific state are excluded from M5.
 
 Consequence application is atomic at the chosen outcome level. Decimal monetary underflow fails clearly without partial mutation. Bounded 0-100 float fields clamp with explicit before/after/clamped trace records, while delayed effects preserve provenance from decision to consequence to scheduled effect to application. Run-level `ConsequenceRuntimeState` resets for every `run()` and serializes consequence history plus pending scheduled effects.
 
 Same-week decision consequences are resolved in the order carried by `WeeklyContext.decisions`; transition code must not reorder them by id or hash. Delayed scheduled effects due in the same week resolve by earliest `due_week`, preserving the existing runtime tuple order for effects with equal due weeks.
+
+Financial charges are separate from direct monetary state effects. A charge has an exact Decimal amount, category, funding order, and shortfall policy. `require_full` charges fail atomically if the full amount cannot be funded; `arrear` charges pay what is available and convert any shortfall into an audited arrear. Scheduled charges preserve the same decision/event/outcome provenance as scheduled effects and execute exactly once.
 
 ## Memory & Learning Engine
 
@@ -90,6 +93,8 @@ The learning transition mutates only `AgentState.memory`. It never fabricates co
 M7 models the ordinary mechanics of a week. Passive financial life applies income, rent, recurring commitments, debt interest, debt minimum payments, and arrears using exact `Decimal` money. Obligatory shortfalls are audited and can create or reinforce arrears without allowing balances to go negative.
 
 Routine planning creates a normal, auditable weekly routine decision from data-defined routine profiles, using the existing Decision Engine. Routine execution then applies the selected profile's actual passive effects to bounded health, mental, needs, routine, and city-familiarity state. It does not create events, hidden consequences, memories, skills, employment, relationships, or personality evolution.
+
+Routine spending keeps reserve semantics explicit. Minimum food can use bank balance, cash, savings, and emergency fund because avoiding food insecurity is essential. Food above the minimum, transport, and discretionary routine spending use only bank balance and cash. Obligatory payments and arrear settlement retain the full funding order.
 
 Special events remain separate: they are stochastic interruptions or opportunities selected by the Event Engine around ordinary life, not replacements for it.
 
@@ -141,6 +146,15 @@ M11 binds behavior evidence to the exact executed action record and chosen same-
 
 Personality changes slowly enough that one difficult month does not become an identity. M11 anchors the incoming personality on the first adaptation week, accumulates multi-week evidence by trait, applies evidence decay and confidence, and then moves 0..1 personality traits by tiny capped weekly deltas toward an anchor-bounded target. The transition runs last, after routine execution, so week-N decisions use the personality Maya had when week N began; any personality or habit changes can influence only later weeks.
 
+## Calibration
+
+M12 provides `lifesim.canonical.build_canonical_engine()` and `scripts/run_calibration.py` so demos, tests, and calibration share one transition order. Calibration runs fixed seed cohorts without seed-specific overrides, records checkpoints at weeks 12, 26, 52, and 156, and reports aggregate financial, employment, education, event, and relationship indicators plus soft warnings.
+
+```powershell
+python scripts/run_calibration.py --config configs/canonical/maya_v1.toml --json
+python scripts/run_calibration.py --config configs/canonical/maya_v1.toml --holdout --json
+```
+
 ## Test
 
 ```powershell
@@ -153,6 +167,7 @@ ruff check .
 ```text
 configs/              Example and default configuration files
 configs/adaptation/   Habit and personality adaptation catalog files
+configs/canonical/    Canonical run configurations for calibration
 configs/consequences/ Consequence catalog files
 configs/development/  Skills, education programs, and weekly development profiles
 configs/employment/   Employment job-market catalog files
@@ -162,6 +177,7 @@ configs/scenarios/    Agent scenario files
 configs/social/       Individual relationship and potential-contact catalog files
 runs/                 Local simulation outputs; ignored except for .gitkeep
 scripts/              Developer and demo entry-point scripts
+src/lifesim/calibration/ Deterministic calibration harness
 src/lifesim/consequences/ Consequence engine package
 src/lifesim/adaptation/ Habit and personality adaptation package
 src/lifesim/decisions/ Decision engine package

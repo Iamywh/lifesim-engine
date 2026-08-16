@@ -42,12 +42,13 @@ learning_value = 0.5
 health_value = -0.1
 comfort_value = -0.2
 goal_tags = ["city", "finance", "independence"]
+behavior_tags = ["city_learning", "frugal"]
 
 [[events.options]]
 option_id = "pay_for_faster_transport"
 label = "Pay for faster transport"
 summary = "Spend money on a faster route and protect the rest of the day."
-estimated_cost = "14.00"
+estimated_cost = "16.00"
 time_cost_hours = 0.25
 energy_cost = 4.0
 short_term_value = 0.4
@@ -61,6 +62,7 @@ learning_value = 0.0
 health_value = 0.0
 comfort_value = 0.3
 goal_tags = ["city"]
+behavior_tags = ["paid_convenience"]
 
 [[events]]
 event_id = "unexpected_small_expense"
@@ -88,7 +90,7 @@ multiplier = 1.4
 option_id = "handle_immediately"
 label = "Handle immediately"
 summary = "Pay the expense now and remove the uncertainty."
-estimated_cost = "22.00"
+estimated_cost = "24.00"
 time_cost_hours = 0.5
 energy_cost = 8.0
 short_term_value = 0.1
@@ -102,6 +104,7 @@ learning_value = 0.1
 health_value = 0.0
 comfort_value = 0.1
 goal_tags = ["finance", "stability"]
+behavior_tags = ["financial_responsibility"]
 
 [[events.options]]
 option_id = "postpone_expense"
@@ -121,6 +124,7 @@ learning_value = -0.1
 health_value = 0.0
 comfort_value = 0.2
 goal_tags = ["finance"]
+behavior_tags = ["avoidance", "cash_preservation"]
 
 [[events]]
 event_id = "social_invitation"
@@ -148,7 +152,7 @@ multiplier = 1.5
 option_id = "accept_invitation"
 label = "Accept invitation"
 summary = "Join the invitation and invest energy in local connection."
-estimated_cost = "18.00"
+estimated_cost = "20.00"
 time_cost_hours = 3.0
 energy_cost = 28.0
 short_term_value = 0.3
@@ -162,6 +166,7 @@ learning_value = 0.2
 health_value = -0.1
 comfort_value = -0.4
 goal_tags = ["social", "city", "experience"]
+behavior_tags = ["social_outreach"]
 
 [[events.options]]
 option_id = "decline_and_rest"
@@ -181,6 +186,7 @@ learning_value = 0.0
 health_value = 0.4
 comfort_value = 0.8
 goal_tags = ["health", "stability"]
+behavior_tags = ["recovery", "boundary_setting"]
 
 [[events]]
 event_id = "study_pressure"
@@ -222,6 +228,7 @@ learning_value = 0.7
 health_value = -0.2
 comfort_value = -0.5
 goal_tags = ["education", "career", "stability"]
+behavior_tags = ["focused_study"]
 
 [[events.options]]
 option_id = "maintain_normal_pace"
@@ -241,6 +248,7 @@ learning_value = 0.2
 health_value = 0.1
 comfort_value = 0.4
 goal_tags = ["education", "health"]
+behavior_tags = ["steady_pace"]
 
 [[events]]
 event_id = "low_energy_week"
@@ -282,6 +290,7 @@ learning_value = 0.0
 health_value = 0.6
 comfort_value = 0.9
 goal_tags = ["health", "stability"]
+behavior_tags = ["recovery"]
 
 [[events.options]]
 option_id = "push_through_routine"
@@ -301,3 +310,383 @@ learning_value = 0.1
 health_value = -0.5
 comfort_value = -0.6
 goal_tags = ["career", "education", "stability"]
+behavior_tags = ["persistence"]
+
+[[events]]
+event_id = "phone_or_device_problem"
+version = "1"
+category = "city"
+base_weight = 0.55
+cooldown_weeks = 6
+tags = ["city", "finance", "technology"]
+title = "Phone or device problem"
+summary = "A practical device issue threatens to make the week less organized."
+time_pressure = 0.45
+
+[[events.conditions]]
+type = "numeric_lte"
+path = "financial.bank_balance"
+value = "1800.00"
+
+[[events.options]]
+option_id = "repair_now"
+label = "Repair now"
+summary = "Pay for a small repair and keep routines predictable."
+estimated_cost = "18.00"
+time_cost_hours = 1.5
+energy_cost = 10.0
+short_term_value = 0.3
+future_value = 0.35
+perceived_risk = 0.05
+uncertainty = 0.1
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.2
+learning_value = 0.05
+health_value = 0.0
+comfort_value = 0.25
+goal_tags = ["stability", "city"]
+behavior_tags = ["practical_maintenance"]
+
+[[events.options]]
+option_id = "make_do_for_now"
+label = "Make do for now"
+summary = "Avoid the cost and accept a more awkward week."
+estimated_cost = "0.00"
+time_cost_hours = 1.0
+energy_cost = 8.0
+short_term_value = 0.2
+future_value = -0.25
+perceived_risk = 0.25
+uncertainty = 0.35
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.25
+learning_value = 0.1
+health_value = -0.05
+comfort_value = -0.25
+goal_tags = ["finance"]
+behavior_tags = ["frugal", "improvisation"]
+
+[[events]]
+event_id = "household_maintenance_issue"
+version = "1"
+category = "housing"
+base_weight = 0.5
+cooldown_weeks = 7
+tags = ["housing", "finance"]
+title = "Household maintenance issue"
+summary = "A small household issue needs attention before it becomes more annoying."
+time_pressure = 0.35
+
+[[events.options]]
+option_id = "buy_basic_supplies"
+label = "Buy basic supplies"
+summary = "Spend a little money to address the issue properly."
+estimated_cost = "12.00"
+time_cost_hours = 1.0
+energy_cost = 9.0
+short_term_value = 0.25
+future_value = 0.3
+perceived_risk = 0.05
+uncertainty = 0.1
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.25
+learning_value = 0.05
+health_value = 0.05
+comfort_value = 0.3
+goal_tags = ["housing", "stability"]
+behavior_tags = ["practical_maintenance"]
+
+[[events.options]]
+option_id = "patch_temporarily"
+label = "Patch temporarily"
+summary = "Use a temporary workaround and keep spending down."
+estimated_cost = "0.00"
+time_cost_hours = 1.5
+energy_cost = 10.0
+short_term_value = 0.15
+future_value = -0.2
+perceived_risk = 0.2
+uncertainty = 0.25
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.2
+learning_value = 0.1
+health_value = -0.05
+comfort_value = -0.2
+goal_tags = ["finance", "housing"]
+behavior_tags = ["frugal", "improvisation"]
+
+[[events]]
+event_id = "free_local_activity"
+version = "1"
+category = "social"
+base_weight = 0.65
+cooldown_weeks = 3
+tags = ["social", "city", "free"]
+title = "Free local activity"
+summary = "A free local activity offers a low-cost way to learn the city."
+time_pressure = 0.2
+
+[[events.weight_modifiers]]
+type = "numeric_gte"
+path = "mental.loneliness"
+value = 45.0
+multiplier = 1.35
+
+[[events.options]]
+option_id = "attend_free_activity"
+label = "Attend free activity"
+summary = "Go along and invest a little energy in the city."
+estimated_cost = "0.00"
+time_cost_hours = 3.0
+energy_cost = 18.0
+short_term_value = 0.25
+future_value = 0.35
+perceived_risk = 0.1
+uncertainty = 0.2
+social_value = 0.55
+social_pressure = 0.1
+autonomy_value = 0.2
+learning_value = 0.25
+health_value = 0.0
+comfort_value = -0.05
+goal_tags = ["social", "city", "experience"]
+behavior_tags = ["social_outreach", "city_learning"]
+
+[[events.options]]
+option_id = "skip_for_quiet"
+label = "Skip for quiet"
+summary = "Save energy and keep the week simple."
+estimated_cost = "0.00"
+time_cost_hours = 0.5
+energy_cost = 2.0
+short_term_value = 0.2
+future_value = -0.1
+perceived_risk = 0.05
+uncertainty = 0.05
+social_value = -0.25
+social_pressure = 0.05
+autonomy_value = 0.35
+learning_value = 0.0
+health_value = 0.25
+comfort_value = 0.55
+goal_tags = ["health", "stability"]
+behavior_tags = ["recovery", "boundary_setting"]
+
+[[events]]
+event_id = "bureaucratic_errand"
+version = "1"
+category = "city"
+base_weight = 0.45
+cooldown_weeks = 8
+tags = ["city", "administration"]
+title = "Bureaucratic errand"
+summary = "A city paperwork errand needs a little attention."
+time_pressure = 0.4
+
+[[events.options]]
+option_id = "handle_errand"
+label = "Handle errand"
+summary = "Spend the time now and reduce future friction."
+estimated_cost = "0.00"
+time_cost_hours = 2.5
+energy_cost = 16.0
+short_term_value = -0.05
+future_value = 0.4
+perceived_risk = 0.05
+uncertainty = 0.15
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.25
+learning_value = 0.15
+health_value = -0.05
+comfort_value = -0.15
+goal_tags = ["city", "stability"]
+behavior_tags = ["administrative_followthrough"]
+
+[[events.options]]
+option_id = "defer_errand"
+label = "Defer errand"
+summary = "Postpone the errand and keep this week lighter."
+estimated_cost = "0.00"
+time_cost_hours = 0.25
+energy_cost = 2.0
+short_term_value = 0.25
+future_value = -0.3
+perceived_risk = 0.3
+uncertainty = 0.35
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.1
+learning_value = -0.05
+health_value = 0.05
+comfort_value = 0.25
+goal_tags = ["stability"]
+behavior_tags = ["avoidance"]
+
+[[events]]
+event_id = "minor_health_setback"
+version = "1"
+category = "health"
+base_weight = 0.5
+cooldown_weeks = 5
+tags = ["health"]
+title = "Minor health setback"
+summary = "A minor health wobble makes pacing choices matter."
+time_pressure = 0.3
+
+[[events.weight_modifiers]]
+type = "numeric_gte"
+path = "health.sleep_debt"
+value = 4.0
+multiplier = 1.4
+
+[[events.options]]
+option_id = "rest_and_recover"
+label = "Rest and recover"
+summary = "Reduce demands and let the setback pass."
+estimated_cost = "0.00"
+time_cost_hours = 3.0
+energy_cost = 2.0
+short_term_value = 0.25
+future_value = 0.25
+perceived_risk = 0.05
+uncertainty = 0.1
+social_value = -0.1
+social_pressure = 0.0
+autonomy_value = 0.25
+learning_value = 0.05
+health_value = 0.6
+comfort_value = 0.45
+goal_tags = ["health", "stability"]
+behavior_tags = ["recovery"]
+
+[[events.options]]
+option_id = "keep_full_schedule"
+label = "Keep full schedule"
+summary = "Push through and try not to lose momentum."
+estimated_cost = "0.00"
+time_cost_hours = 4.0
+energy_cost = 34.0
+short_term_value = 0.15
+future_value = 0.15
+perceived_risk = 0.3
+uncertainty = 0.25
+social_value = 0.0
+social_pressure = 0.15
+autonomy_value = 0.2
+learning_value = 0.0
+health_value = -0.45
+comfort_value = -0.5
+goal_tags = ["education", "career"]
+behavior_tags = ["persistence"]
+
+[[events]]
+event_id = "university_admin_deadline"
+version = "1"
+category = "education"
+base_weight = 0.5
+cooldown_weeks = 9
+tags = ["education", "administration"]
+title = "University admin deadline"
+summary = "A university administrative deadline needs a student-life choice."
+time_pressure = 0.55
+
+[[events.conditions]]
+type = "string_equals"
+path = "education.status"
+value = "enrolled"
+
+[[events.options]]
+option_id = "complete_admin_now"
+label = "Complete admin now"
+summary = "Finish the task this week and avoid compounding stress."
+estimated_cost = "0.00"
+time_cost_hours = 2.0
+energy_cost = 12.0
+short_term_value = -0.05
+future_value = 0.45
+perceived_risk = 0.05
+uncertainty = 0.1
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.25
+learning_value = 0.1
+health_value = -0.05
+comfort_value = -0.1
+goal_tags = ["education", "stability"]
+behavior_tags = ["administrative_followthrough", "focused_study"]
+
+[[events.options]]
+option_id = "postpone_admin"
+label = "Postpone admin"
+summary = "Push the task out and keep this week focused elsewhere."
+estimated_cost = "0.00"
+time_cost_hours = 0.25
+energy_cost = 2.0
+short_term_value = 0.2
+future_value = -0.35
+perceived_risk = 0.35
+uncertainty = 0.4
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.05
+learning_value = -0.1
+health_value = 0.0
+comfort_value = 0.2
+goal_tags = ["education"]
+behavior_tags = ["avoidance"]
+
+[[events]]
+event_id = "small_refund_opportunity"
+version = "1"
+category = "finance"
+base_weight = 0.45
+cooldown_weeks = 10
+tags = ["finance", "opportunity"]
+title = "Small refund opportunity"
+summary = "A small refund or reimbursement becomes available if Maya follows up."
+time_pressure = 0.25
+
+[[events.options]]
+option_id = "claim_refund"
+label = "Claim refund"
+summary = "Do the admin and bring a small amount of money back in."
+estimated_cost = "0.00"
+time_cost_hours = 1.0
+energy_cost = 8.0
+short_term_value = 0.25
+future_value = 0.25
+perceived_risk = 0.05
+uncertainty = 0.15
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.25
+learning_value = 0.1
+health_value = 0.0
+comfort_value = 0.2
+goal_tags = ["finance", "stability"]
+behavior_tags = ["financial_responsibility", "administrative_followthrough"]
+
+[[events.options]]
+option_id = "ignore_refund"
+label = "Ignore refund"
+summary = "Skip the small administrative task."
+estimated_cost = "0.00"
+time_cost_hours = 0.0
+energy_cost = 0.0
+short_term_value = 0.1
+future_value = -0.2
+perceived_risk = 0.1
+uncertainty = 0.1
+social_value = 0.0
+social_pressure = 0.0
+autonomy_value = 0.2
+learning_value = 0.0
+health_value = 0.0
+comfort_value = 0.1
+goal_tags = ["finance"]
+behavior_tags = ["avoidance"]

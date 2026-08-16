@@ -85,6 +85,7 @@ class SimulationResult:
     decision_history: Any | None = None
     consequence_history: Any | None = None
     pending_scheduled_effects: tuple[Any, ...] = ()
+    pending_scheduled_financial_charges: tuple[Any, ...] = ()
     learning_history: Any | None = None
     passive_history: Any | None = None
     employment_history: Any | None = None
@@ -103,6 +104,11 @@ class SimulationResult:
             self,
             "pending_scheduled_effects",
             tuple(self.pending_scheduled_effects),
+        )
+        object.__setattr__(
+            self,
+            "pending_scheduled_financial_charges",
+            tuple(self.pending_scheduled_financial_charges),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -123,6 +129,10 @@ class SimulationResult:
         if self.pending_scheduled_effects:
             output["pending_scheduled_effects"] = [
                 effect.to_dict() for effect in self.pending_scheduled_effects
+            ]
+        if self.pending_scheduled_financial_charges:
+            output["pending_scheduled_financial_charges"] = [
+                charge.to_dict() for charge in self.pending_scheduled_financial_charges
             ]
         if self.learning_history is not None:
             output["learning_history"] = self.learning_history.to_dict()
@@ -243,9 +253,13 @@ class LifeSimEngine:
 
         consequence_history = None
         pending_scheduled_effects = ()
+        pending_scheduled_financial_charges = ()
         if consequence_runtime is not None:
             consequence_history = consequence_runtime.history
             pending_scheduled_effects = consequence_runtime.pending_scheduled_effects
+            pending_scheduled_financial_charges = (
+                consequence_runtime.pending_scheduled_financial_charges
+            )
         learning_history = None
         if learning_runtime is not None:
             learning_history = learning_runtime.history
@@ -275,6 +289,7 @@ class LifeSimEngine:
             decision_history=decision_history,
             consequence_history=consequence_history,
             pending_scheduled_effects=pending_scheduled_effects,
+            pending_scheduled_financial_charges=pending_scheduled_financial_charges,
             learning_history=learning_history,
             passive_history=passive_history,
             employment_history=employment_history,

@@ -49,8 +49,9 @@ def test_event_catalog_loading() -> None:
 
     assert catalog.max_events_per_week == 1
     assert catalog.event_probability == 0.45
-    assert len(catalog.definitions) == 5
+    assert len(catalog.definitions) == 12
     assert catalog.definitions[0].event_id == "minor_transit_disruption"
+    assert catalog.definitions[-1].event_id == "small_refund_opportunity"
 
 
 def test_invalid_event_configuration_fails_clearly() -> None:

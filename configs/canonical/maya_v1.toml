@@ -1,0 +1,8 @@
+[simulation]
+name = "maya-v1-canonical"
+seed = 42
+duration_weeks = 156
+start_date = "2026-01-05"
+
+[city]
+name = "Veyra"

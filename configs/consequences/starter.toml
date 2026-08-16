@@ -23,10 +23,12 @@ event_id = "minor_transit_disruption"
 event_version = "1"
 option_id = "pay_for_faster_transport"
 
-[[consequences.effects]]
-path = "financial.bank_balance"
-delta = "-16.00"
+[[consequences.financial_charges]]
+amount = "16.00"
+category = "transport"
 delay_weeks = 0
+shortfall_policy = "require_full"
+funding_order = ["bank_balance", "cash", "savings", "emergency_fund"]
 
 [[consequences.outcomes]]
 outcome_id = "normal_route"
@@ -52,14 +54,273 @@ delta = -4.0
 delay_weeks = 0
 
 [[consequences]]
+event_id = "phone_or_device_problem"
+event_version = "1"
+option_id = "repair_now"
+
+[[consequences.financial_charges]]
+amount = "18.00"
+category = "technology"
+delay_weeks = 0
+shortfall_policy = "require_full"
+funding_order = ["bank_balance", "cash", "savings", "emergency_fund"]
+
+[[consequences.effects]]
+path = "mental.stress"
+delta = -2.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "phone_or_device_problem"
+event_version = "1"
+option_id = "make_do_for_now"
+
+[[consequences.effects]]
+path = "mental.mental_load"
+delta = 3.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "mental.stress"
+delta = 2.0
+delay_weeks = 1
+
+[[consequences]]
+event_id = "household_maintenance_issue"
+event_version = "1"
+option_id = "buy_basic_supplies"
+
+[[consequences.financial_charges]]
+amount = "12.00"
+category = "housing"
+delay_weeks = 0
+shortfall_policy = "require_full"
+funding_order = ["bank_balance", "cash", "savings", "emergency_fund"]
+
+[[consequences.effects]]
+path = "needs.housing_security"
+delta = 2.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "household_maintenance_issue"
+event_version = "1"
+option_id = "patch_temporarily"
+
+[[consequences.effects]]
+path = "mental.stress"
+delta = 2.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "needs.housing_security"
+delta = -1.5
+delay_weeks = 1
+
+[[consequences]]
+event_id = "free_local_activity"
+event_version = "1"
+option_id = "attend_free_activity"
+
+[[consequences.effects]]
+path = "mental.loneliness"
+delta = -4.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "needs.belonging"
+delta = 3.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "social.city_familiarity"
+delta = 2.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "health.energy"
+delta = -5.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "free_local_activity"
+event_version = "1"
+option_id = "skip_for_quiet"
+
+[[consequences.effects]]
+path = "health.energy"
+delta = 3.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "mental.loneliness"
+delta = 1.5
+delay_weeks = 0
+
+[[consequences]]
+event_id = "bureaucratic_errand"
+event_version = "1"
+option_id = "handle_errand"
+
+[[consequences.effects]]
+path = "mental.stress"
+delta = -2.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "mental.mental_load"
+delta = -1.5
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "social.city_familiarity"
+delta = 1.5
+delay_weeks = 0
+
+[[consequences]]
+event_id = "bureaucratic_errand"
+event_version = "1"
+option_id = "defer_errand"
+
+[[consequences.effects]]
+path = "mental.stress"
+delta = 3.0
+delay_weeks = 1
+
+[[consequences.effects]]
+path = "mental.mental_load"
+delta = 2.0
+delay_weeks = 1
+
+[[consequences]]
+event_id = "minor_health_setback"
+event_version = "1"
+option_id = "rest_and_recover"
+
+[[consequences.effects]]
+path = "health.energy"
+delta = 8.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "health.sleep_debt"
+delta = -1.0
+delay_weeks = 0
+
+[[consequences.effects.conditions]]
+type = "numeric_gte"
+path = "health.sleep_debt"
+value = 1.0
+
+[[consequences.effects]]
+path = "mental.recovery_need"
+delta = -5.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "minor_health_setback"
+event_version = "1"
+option_id = "keep_full_schedule"
+
+[[consequences.outcomes]]
+outcome_id = "kept_momentum"
+weight = 0.6
+
+[[consequences.outcomes.effects]]
+path = "education.progress"
+delta = 0.8
+delay_weeks = 0
+
+[[consequences.outcomes.effects]]
+path = "health.energy"
+delta = -6.0
+delay_weeks = 0
+
+[[consequences.outcomes]]
+outcome_id = "setback_lingers"
+weight = 0.4
+
+[[consequences.outcomes.effects]]
+path = "health.energy"
+delta = -12.0
+delay_weeks = 0
+
+[[consequences.outcomes.effects]]
+path = "health.sleep_debt"
+delta = 1.0
+delay_weeks = 0
+
+[[consequences.outcomes.effects]]
+path = "mental.stress"
+delta = 4.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "university_admin_deadline"
+event_version = "1"
+option_id = "complete_admin_now"
+
+[[consequences.effects]]
+path = "mental.mental_load"
+delta = -3.0
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "education.progress"
+delta = 0.5
+delay_weeks = 0
+
+[[consequences]]
+event_id = "university_admin_deadline"
+event_version = "1"
+option_id = "postpone_admin"
+
+[[consequences.effects]]
+path = "mental.stress"
+delta = 4.0
+delay_weeks = 1
+
+[[consequences.effects]]
+path = "mental.mental_load"
+delta = 3.0
+delay_weeks = 1
+
+[[consequences]]
+event_id = "small_refund_opportunity"
+event_version = "1"
+option_id = "claim_refund"
+
+[[consequences.effects]]
+path = "financial.bank_balance"
+delta = "18.00"
+delay_weeks = 0
+
+[[consequences.effects]]
+path = "mental.stress"
+delta = -1.0
+delay_weeks = 0
+
+[[consequences]]
+event_id = "small_refund_opportunity"
+event_version = "1"
+option_id = "ignore_refund"
+
+[[consequences.effects]]
+path = "mental.mental_load"
+delta = 0.8
+delay_weeks = 0
+
+[[consequences]]
 event_id = "unexpected_small_expense"
 event_version = "1"
 option_id = "handle_immediately"
 
-[[consequences.effects]]
-path = "financial.bank_balance"
-delta = "-24.00"
+[[consequences.financial_charges]]
+amount = "24.00"
+category = "unexpected_expense"
 delay_weeks = 0
+shortfall_policy = "require_full"
+funding_order = ["bank_balance", "cash", "savings", "emergency_fund"]
 
 [[consequences.effects]]
 path = "mental.stress"
@@ -76,10 +337,12 @@ path = "mental.stress"
 delta = 6.0
 delay_weeks = 0
 
-[[consequences.effects]]
-path = "financial.bank_balance"
-delta = "-24.00"
+[[consequences.financial_charges]]
+amount = "24.00"
+category = "unexpected_expense"
 delay_weeks = 1
+shortfall_policy = "arrear"
+funding_order = ["bank_balance", "cash", "savings", "emergency_fund"]
 
 [[consequences.effects]]
 path = "mental.stress"
@@ -91,10 +354,12 @@ event_id = "social_invitation"
 event_version = "1"
 option_id = "accept_invitation"
 
-[[consequences.effects]]
-path = "financial.bank_balance"
-delta = "-20.00"
+[[consequences.financial_charges]]
+amount = "20.00"
+category = "social"
 delay_weeks = 0
+shortfall_policy = "require_full"
+funding_order = ["bank_balance", "cash", "savings", "emergency_fund"]
 
 [[consequences.effects]]
 path = "mental.loneliness"
@@ -185,6 +450,11 @@ delay_weeks = 0
 path = "health.sleep_debt"
 delta = -2.0
 delay_weeks = 0
+
+[[consequences.effects.conditions]]
+type = "numeric_gte"
+path = "health.sleep_debt"
+value = 2.0
 
 [[consequences]]
 event_id = "low_energy_week"
