@@ -13,7 +13,6 @@ ACTIVE_APPLICATION_STATUSES = {
     "INTERVIEW_INVITED",
     "INTERVIEW_ATTENDED",
     "OFFER_AVAILABLE",
-    "ACCEPTED",
 }
 
 
@@ -67,7 +66,7 @@ class JobDefinition(SerializableState):
             "weekly_hours",
             _finite_number(self.weekly_hours, "weekly_hours", minimum=1.0, maximum=80.0),
         )
-        _require_money(self.hourly_rate, "hourly_rate")
+        _require_positive_money(self.hourly_rate, "hourly_rate")
         for name in ("stability", "physical_demand", "mental_demand", "social_demand"):
             object.__setattr__(
                 self,
@@ -109,6 +108,7 @@ class EmploymentCatalog(SerializableState):
     jobs: tuple[JobDefinition, ...]
     max_discoveries_per_week: int = 2
     relisting_cooldown_weeks: int = 3
+    base_market_discovery_probability: float = 0.45
 
     def __post_init__(self) -> None:
         jobs = _typed_tuple(self.jobs, JobDefinition, "jobs")
@@ -116,6 +116,16 @@ class EmploymentCatalog(SerializableState):
         object.__setattr__(self, "jobs", jobs)
         _integer(self.max_discoveries_per_week, "max_discoveries_per_week", minimum=0)
         _integer(self.relisting_cooldown_weeks, "relisting_cooldown_weeks", minimum=0)
+        object.__setattr__(
+            self,
+            "base_market_discovery_probability",
+            _finite_number(
+                self.base_market_discovery_probability,
+                "base_market_discovery_probability",
+                minimum=0.0,
+                maximum=1.0,
+            ),
+        )
 
     def find(self, job_id: str, version: str) -> JobDefinition | None:
         for job in self.jobs:
@@ -204,11 +214,63 @@ class MarketCandidateTrace(SerializableState):
 
 
 @dataclass(frozen=True, slots=True)
+class EmploymentDiscoveryDraw(SerializableState):
+    slot: int
+    trigger_probability: float
+    trigger_roll: float
+    triggered: bool
+    total_weight: float = 0.0
+    selection_roll: float | None = None
+    selected_job_key: str = ""
+
+    def __post_init__(self) -> None:
+        _integer(self.slot, "slot", minimum=0)
+        object.__setattr__(
+            self,
+            "trigger_probability",
+            _finite_number(
+                self.trigger_probability,
+                "trigger_probability",
+                minimum=0.0,
+                maximum=1.0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "trigger_roll",
+            _finite_number(self.trigger_roll, "trigger_roll", minimum=0.0, maximum=1.0),
+        )
+        if not isinstance(self.triggered, bool):
+            raise TypeError("Expected triggered to be bool.")
+        object.__setattr__(
+            self,
+            "total_weight",
+            _finite_number(self.total_weight, "total_weight", minimum=0.0, maximum=None),
+        )
+        if self.selection_roll is not None:
+            object.__setattr__(
+                self,
+                "selection_roll",
+                _finite_number(
+                    self.selection_roll,
+                    "selection_roll",
+                    minimum=0.0,
+                    maximum=max(self.total_weight, 0.0),
+                ),
+            )
+        if not isinstance(self.selected_job_key, str):
+            raise TypeError("Expected selected_job_key to be a string.")
+        if self.triggered and self.total_weight <= 0:
+            raise ValueError("Expected triggered discovery draw to include positive total_weight.")
+
+
+@dataclass(frozen=True, slots=True)
 class EmploymentMarketRecord(SerializableState):
     week: int
     candidates: tuple[MarketCandidateTrace, ...]
     discovered_job_keys: tuple[str, ...]
     event_ids_created: tuple[str, ...]
+    discovery_draws: tuple[EmploymentDiscoveryDraw, ...] = ()
 
     def __post_init__(self) -> None:
         _integer(self.week, "week", minimum=0)
@@ -216,6 +278,11 @@ class EmploymentMarketRecord(SerializableState):
             self,
             "candidates",
             _typed_tuple(self.candidates, MarketCandidateTrace, "candidates"),
+        )
+        object.__setattr__(
+            self,
+            "discovery_draws",
+            _typed_tuple(self.discovery_draws, EmploymentDiscoveryDraw, "discovery_draws"),
         )
         object.__setattr__(
             self,
@@ -312,7 +379,7 @@ class ScheduledEmploymentStart(SerializableState):
             "weekly_hours",
             _finite_number(self.weekly_hours, "weekly_hours", minimum=1.0, maximum=80.0),
         )
-        _require_money(self.hourly_rate, "hourly_rate")
+        _require_positive_money(self.hourly_rate, "hourly_rate")
         for name in ("stability", "physical_demand", "mental_demand", "social_demand"):
             object.__setattr__(
                 self,
@@ -566,6 +633,12 @@ def _require_money(value: Decimal, name: str) -> None:
         raise ValueError(f"Expected monetary value '{name}' to be finite.")
     if value < Decimal(0):
         raise ValueError(f"Expected monetary value '{name}' to be non-negative.")
+
+
+def _require_positive_money(value: Decimal, name: str) -> None:
+    _require_money(value, name)
+    if value <= Decimal(0):
+        raise ValueError(f"Expected monetary value '{name}' to be > 0.")
 
 
 def _require_non_empty(value: str, name: str) -> None:

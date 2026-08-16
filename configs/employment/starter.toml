@@ -1,6 +1,7 @@
 [employment_settings]
 max_discoveries_per_week = 2
 relisting_cooldown_weeks = 3
+base_market_discovery_probability = 0.45
 
 [[jobs]]
 job_id = "cafe_counter_assistant"

@@ -168,8 +168,10 @@ def _score_components(
     time_pressure = event.time_pressure
 
     cost_ratio = _cost_ratio(option.estimated_cost, _liquid_resources(state))
+    recurring_gain_ratio = _recurring_gain_ratio(option.expected_weekly_financial_gain)
     energy_ratio = option.energy_cost / 100.0
     time_ratio = option.time_cost_hours / 168.0
+    recurring_time_ratio = option.ongoing_weekly_time_hours / 168.0
     goal_signal = _goal_alignment_signal(state, option)
 
     specs = (
@@ -192,11 +194,24 @@ def _score_components(
         ),
         ("financial_cost", -cost_ratio, 0.5 + personality.frugality * 2.0),
         (
+            "recurring_financial_gain",
+            recurring_gain_ratio,
+            0.45 + personality.conscientiousness * 0.4 + personality.frugality * 0.35,
+        ),
+        (
             "energy_cost",
             -energy_ratio,
             0.5 + (1.0 - health.energy / 100.0) * 1.5 + mental.recovery_need / 100.0 * 0.5,
         ),
         ("time_cost", -time_ratio, 0.4 + personality.conscientiousness * 0.5),
+        (
+            "recurring_time_commitment",
+            -recurring_time_ratio,
+            0.45
+            + personality.independence * 0.25
+            + (1.0 - health.energy / 100.0) * 0.7
+            + mental.recovery_need / 100.0 * 0.4,
+        ),
         ("perceived_risk", -option.perceived_risk, 1.2 - personality.risk_tolerance * 0.9),
         (
             "social_value",
@@ -312,6 +327,19 @@ def _cost_ratio(cost: Decimal, liquid_resources: Decimal) -> float:
     if liquid_resources <= Decimal(0):
         return 1.5
     return min(1.5, float(cost / liquid_resources))
+
+
+def _recurring_gain_ratio(gain: Decimal) -> float:
+    """Normalize expected weekly gain for generic recurring choices.
+
+    The ratio enters the float utility domain only after Decimal arithmetic is
+    complete. A weekly gain around 400 is treated as a strong positive signal,
+    with larger values capped so high pay helps but cannot dominate every other
+    tradeoff automatically.
+    """
+    if gain <= Decimal(0):
+        return 0.0
+    return min(1.5, float(gain / Decimal("400.00")))
 
 
 def _goal_alignment_signal(state: AgentState, option: EventOption) -> float:

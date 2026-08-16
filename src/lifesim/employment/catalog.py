@@ -26,6 +26,10 @@ def parse_employment_catalog(raw: dict[str, Any]) -> EmploymentCatalog:
         jobs=tuple(_parse_job(item) for item in jobs),
         max_discoveries_per_week=settings.get("max_discoveries_per_week", 2),
         relisting_cooldown_weeks=settings.get("relisting_cooldown_weeks", 3),
+        base_market_discovery_probability=settings.get(
+            "base_market_discovery_probability",
+            0.45,
+        ),
     )
 
 

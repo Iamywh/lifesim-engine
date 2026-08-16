@@ -45,6 +45,7 @@ from lifesim.events import (
     EventDefinition,
     EventEngine,
     EventEngineTransition,
+    EventOccurrence,
     EventOption,
 )
 from lifesim.passive import PassiveCashflowEngine, PassiveCashflowTransition
@@ -149,11 +150,11 @@ def test_opening_decision_uses_m4_and_processes_application_without_extra_brain(
 
     maya = load_agent_state(MAYA_SCENARIO)
     catalog = EmploymentCatalog((job("entry"),))
-    event = EmploymentMarketEngine(catalog).advance_market(maya, context(), EmploymentRuntimeState())[1][0]
+    event = opening_event(catalog.jobs[0], week=1)
     decision = DecisionEngine().decide_event(maya, context(events=(event,)), event)
     runtime, records = EmploymentProcessEngine(catalog).process_decisions(
         maya,
-        replace(context(), decisions=(decision,)),
+        replace(context(), events=(event,), decisions=(decision,)),
         EmploymentRuntimeState(),
     )
 
@@ -166,6 +167,115 @@ def test_opening_decision_uses_m4_and_processes_application_without_extra_brain(
     else:
         assert runtime.applications == ()
         assert records[0].status_after == "SKIPPED"
+
+
+def test_recurring_financial_gain_and_time_are_generic_m4_score_components() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    low_pay = EventOption(
+        option_id="low_pay",
+        label="Low pay",
+        summary="Low recurring gain.",
+        expected_weekly_financial_gain=Decimal("100.00"),
+        ongoing_weekly_time_hours=10.0,
+    )
+    high_pay = EventOption(
+        option_id="high_pay",
+        label="High pay",
+        summary="High recurring gain.",
+        expected_weekly_financial_gain=Decimal("300.00"),
+        ongoing_weekly_time_hours=10.0,
+    )
+    high_hours = EventOption(
+        option_id="high_hours",
+        label="High hours",
+        summary="High recurring hours.",
+        expected_weekly_financial_gain=Decimal("100.00"),
+        ongoing_weekly_time_hours=30.0,
+    )
+    event = EventOccurrence(
+        event_id="generic_recurring_choice",
+        version="1",
+        week=1,
+        category="test",
+        effective_weight=1.0,
+        title="Recurring choice",
+        summary="Recurring choice.",
+        tags=("test",),
+        options=(low_pay, high_pay, high_hours),
+    )
+
+    record = DecisionEngine().decide_event(maya, context(events=(event,)), event)
+    evaluations = {evaluation.option_id: evaluation for evaluation in record.evaluations}
+
+    assert component(evaluations["high_pay"], "recurring_financial_gain").contribution > component(
+        evaluations["low_pay"],
+        "recurring_financial_gain",
+    ).contribution
+    assert component(evaluations["high_hours"], "recurring_time_commitment").contribution < component(
+        evaluations["low_pay"],
+        "recurring_time_commitment",
+    ).contribution
+    assert EventOption("old", "Old", "Old.").expected_weekly_financial_gain == Decimal("0.00")
+
+
+def test_employment_pay_and_hours_populate_m4_inputs_without_prose_parsing() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    target = job("visible_terms", hourly_rate=Decimal("15.00"), weekly_hours=20.0)
+    event = opening_event(target, week=1)
+
+    record = DecisionEngine().decide_event(maya, context(events=(event,)), event)
+    apply = next(evaluation for evaluation in record.evaluations if evaluation.option_id == "apply")
+
+    assert event.options[0].expected_weekly_financial_gain == Decimal("300.000")
+    assert event.options[0].ongoing_weekly_time_hours == 20.0
+    assert component(apply, "recurring_financial_gain").contribution > 0
+    assert component(apply, "recurring_time_commitment").contribution < 0
+
+
+def test_market_discovery_trigger_probability_and_audit_are_causal() -> None:
+    catalog = load_employment_catalog(EMPLOYMENT)
+    maya = load_agent_state(MAYA_SCENARIO)
+    low = replace(maya, employment=replace(maya.employment, job_search_intensity=20.0))
+    high = replace(maya, employment=replace(maya.employment, job_search_intensity=80.0))
+    familiar = replace(high, social=replace(high.social, city_familiarity=80.0))
+
+    low_record = EmploymentMarketEngine(catalog).advance_market(low, context(seed=41), EmploymentRuntimeState())[2]
+    high_record = EmploymentMarketEngine(catalog).advance_market(high, context(seed=41), EmploymentRuntimeState())[2]
+    familiar_record = EmploymentMarketEngine(catalog).advance_market(
+        familiar,
+        context(seed=41),
+        EmploymentRuntimeState(),
+    )[2]
+
+    assert high_record.discovery_draws[0].trigger_probability > low_record.discovery_draws[0].trigger_probability
+    assert familiar_record.discovery_draws[0].trigger_probability > high_record.discovery_draws[0].trigger_probability
+    assert len(high_record.discovery_draws) == catalog.max_discoveries_per_week
+    assert len(high_record.discovered_job_keys) <= catalog.max_discoveries_per_week
+    triggered = [draw for draw in high_record.discovery_draws if draw.triggered]
+    for draw in triggered:
+        assert draw.total_weight > 0
+        assert draw.selection_roll is not None
+        assert draw.selected_job_key
+
+
+def test_search_intensity_and_city_do_not_change_employer_probability() -> None:
+    from lifesim.employment.engine import _probability_audit
+
+    target = job("probability")
+    application = JobApplication("app_probability", "probability", "1", "SUBMITTED", 1, 1, 2)
+    maya = load_agent_state(MAYA_SCENARIO)
+    low = replace(maya, employment=replace(maya.employment, job_search_intensity=20.0))
+    high = replace(
+        low,
+        employment=replace(low.employment, job_search_intensity=80.0),
+        social=replace(low.social, city_familiarity=80.0),
+    )
+
+    low_audit = _probability_audit(low, context(week=2, seed=5), application, target, "interview")
+    high_audit = _probability_audit(high, context(week=2, seed=5), application, target, "interview")
+
+    assert low_audit.final_probability == high_audit.final_probability
+    assert low_audit.roll == high_audit.roll
 
 
 def test_application_interview_offer_acceptance_and_next_week_start() -> None:
@@ -185,14 +295,22 @@ def test_application_interview_offer_acceptance_and_next_week_start() -> None:
     interview_event = next(event for event in events if event.event_id.startswith("employment_interview:"))
     runtime, _ = EmploymentProcessEngine(catalog).process_decisions(
         maya,
-        replace(context(week=2), decisions=(decision(interview_event, "attend_interview"),)),
+        replace(
+            context(week=2),
+            events=(interview_event,),
+            decisions=(decision(interview_event, "attend_interview"),),
+        ),
         runtime,
     )
     runtime, events, _ = EmploymentMarketEngine(catalog).advance_market(maya, context(week=3), runtime)
     offer_event = next(event for event in events if event.event_id.startswith("employment_offer:"))
     runtime, _ = EmploymentProcessEngine(catalog).process_decisions(
         maya,
-        replace(context(week=3), decisions=(decision(offer_event, "accept_offer"),)),
+        replace(
+            context(week=3),
+            events=(offer_event,),
+            decisions=(decision(offer_event, "accept_offer"),),
+        ),
         runtime,
     )
     acceptance_week = EmploymentBoundaryEngine().apply_boundary(maya, context(week=3), runtime)
@@ -209,6 +327,134 @@ def test_application_interview_offer_acceptance_and_next_week_start() -> None:
     assert started_state.financial.income_streams[-1].source_type == "employment"
     assert started_state.financial.income_streams[-1].source_id == started_state.employment.contract_id
     assert started_runtime.scheduled_starts == ()
+
+
+def test_employment_decision_provenance_rejects_fabricated_stale_and_invalid_records() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    target = job("provenance")
+    catalog = EmploymentCatalog((target,))
+    opening = opening_event(target, week=1)
+    opening_decision = decision(opening, "apply")
+    processor = EmploymentProcessEngine(catalog)
+
+    with pytest.raises(ValueError, match="same-week event"):
+        processor.process_decisions(
+            maya,
+            replace(context(), decisions=(opening_decision,)),
+            EmploymentRuntimeState(),
+        )
+    with pytest.raises(ValueError, match="current agent"):
+        processor.process_decisions(
+            maya,
+            replace(
+                context(events=(opening,)),
+                decisions=(replace(opening_decision, agent_id="other"),),
+            ),
+            EmploymentRuntimeState(),
+        )
+    with pytest.raises(ValueError, match="match WeeklyContext.week"):
+        processor.process_decisions(
+            maya,
+            replace(
+                context(events=(opening,)),
+                decisions=(replace(opening_decision, week=2),),
+            ),
+            EmploymentRuntimeState(),
+        )
+    invalid = decision(opening, "bogus")
+    with pytest.raises(ValueError, match="chosen option"):
+        processor.process_decisions(
+            maya,
+            replace(context(events=(opening,)), decisions=(invalid,)),
+            EmploymentRuntimeState(),
+        )
+
+    interview = EventOccurrence(
+        event_id="employment_interview:app_stale",
+        version="1",
+        week=1,
+        category="employment",
+        effective_weight=1.0,
+        title="Interview",
+        summary="Interview.",
+        tags=("employment",),
+        options=(
+            EventOption("attend_interview", "Attend", "Attend."),
+            EventOption("decline_interview", "Decline", "Decline."),
+        ),
+    )
+    runtime = EmploymentRuntimeState(
+        applications=(JobApplication("app_stale", "provenance", "1", "SUBMITTED", 1, 1, 2),),
+    )
+    with pytest.raises(ValueError, match="invited application"):
+        processor.process_decisions(
+            maya,
+            replace(
+                context(events=(interview,)),
+                decisions=(decision(interview, "attend_interview"),),
+            ),
+            runtime,
+        )
+
+    offer = EventOccurrence(
+        event_id="employment_offer:app_stale",
+        version="1",
+        week=1,
+        category="employment",
+        effective_weight=1.0,
+        title="Offer",
+        summary="Offer.",
+        tags=("employment",),
+        options=(
+            EventOption("accept_offer", "Accept", "Accept."),
+            EventOption("decline_offer", "Decline", "Decline."),
+        ),
+    )
+    with pytest.raises(ValueError, match="available offer"):
+        processor.process_decisions(
+            maya,
+            replace(context(events=(offer,)), decisions=(decision(offer, "accept_offer"),)),
+            runtime,
+        )
+
+
+def test_same_week_accept_offer_and_apply_reconciles_to_one_scheduled_start() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    offered_job = job("offered")
+    new_job = job("new_opening")
+    catalog = EmploymentCatalog((offered_job, new_job))
+    offered = JobApplication("app_offer", "offered", "1", "OFFER_AVAILABLE", 1, 2)
+    runtime = EmploymentRuntimeState(applications=(offered,))
+    offer = EventOccurrence(
+        event_id="employment_offer:app_offer",
+        version="1",
+        week=3,
+        category="employment",
+        effective_weight=1.0,
+        title="Offer",
+        summary="Offer.",
+        tags=("employment",),
+        options=(
+            EventOption("accept_offer", "Accept", "Accept."),
+            EventOption("decline_offer", "Decline", "Decline."),
+        ),
+    )
+    opening = opening_event(new_job, week=3)
+
+    next_runtime, records = EmploymentProcessEngine(catalog).process_decisions(
+        maya,
+        replace(
+            context(week=3, events=(offer, opening)),
+            decisions=(decision(offer, "accept_offer"), decision(opening, "apply")),
+        ),
+        runtime,
+    )
+
+    assert len(next_runtime.scheduled_starts) == 1
+    active_statuses = {"SUBMITTED", "INTERVIEW_INVITED", "INTERVIEW_ATTENDED", "OFFER_AVAILABLE"}
+    assert all(application.status not in active_statuses for application in next_runtime.applications)
+    assert {record.decision_id for record in records if record.decision_id}
+    assert any(record.detail == "closed_after_same_week_offer_acceptance" for record in records)
 
 
 def test_employment_income_reuses_m7_cashflow_and_preserves_unrelated_income() -> None:
@@ -269,6 +515,38 @@ def test_fixed_term_contract_ends_at_end_week_exclusive_and_removes_only_own_str
     assert base.identity == ended.identity
 
 
+def test_accepted_application_is_terminal_but_current_job_is_excluded_from_discovery() -> None:
+    catalog = EmploymentCatalog((job("repeatable"),))
+    maya = load_agent_state(MAYA_SCENARIO)
+    accepted_runtime = EmploymentRuntimeState(
+        applications=(JobApplication("app_done", "repeatable", "1", "ACCEPTED", 1, 2),),
+    )
+    accepted_record = EmploymentMarketEngine(catalog).advance_market(
+        maya,
+        context(seed=3),
+        accepted_runtime,
+    )[2]
+    employed = employed_state_with_job(
+        maya,
+        contract_id="held",
+        end_week_exclusive=0,
+        source_job_id="repeatable",
+    )
+    employed = replace(
+        employed,
+        employment=replace(employed.employment, job_search_intensity=50.0),
+    )
+    employed_record = EmploymentMarketEngine(catalog).advance_market(
+        employed,
+        context(seed=3),
+        EmploymentRuntimeState(),
+    )[2]
+
+    assert accepted_record.candidates[0].eligible is True
+    assert employed_record.candidates[0].eligible is False
+    assert employed_record.candidates[0].reason == "active_application"
+
+
 def test_job_replacement_is_atomic_and_avoids_double_salary() -> None:
     active = employed_state(
         with_income(
@@ -289,7 +567,40 @@ def test_job_replacement_is_atomic_and_avoids_double_salary() -> None:
     ]
     assert len(employment_streams) == 1
     assert employment_streams[0].source_id == "new"
-    assert records[0].action == "contract_started"
+    assert [record.action for record in records] == ["contract_replaced", "contract_started"]
+
+
+def test_contract_and_income_invariants_are_strict() -> None:
+    with pytest.raises(ValueError, match="hourly_rate"):
+        job("free", hourly_rate=Decimal("0.00"))
+    with pytest.raises(ValueError, match="hourly_rate"):
+        scheduled_start("free_start", hourly_rate=Decimal("0.00"))
+    with pytest.raises(ValueError, match="source_id"):
+        IncomeStream("bad wage", Decimal("1.00"), "weekly", 1.0, source_type="employment")
+    with pytest.raises(ValueError, match="source_job_version"):
+        EmploymentState(
+            status="employed",
+            role_title="Role",
+            employer="Employer",
+            weekly_hours=10.0,
+            job_search_intensity=0.0,
+            source_job_id="job",
+            contract_id="contract",
+            contract_type="fixed_term",
+            hourly_rate=Decimal("10.00"),
+            stability=0.5,
+            start_week=2,
+        )
+    with pytest.raises(ValueError, match="after start_week"):
+        employed_state(load_agent_state(MAYA_SCENARIO), end_week_exclusive=1)
+    with pytest.raises(ValueError, match="contract text fields"):
+        EmploymentState(
+            status="seeking_entry_level_work",
+            role_title="Stale",
+            employer="",
+            weekly_hours=0.0,
+            job_search_intensity=10.0,
+        )
 
 
 def test_candidate_fit_uses_skills_not_protected_identity_fields() -> None:
@@ -371,6 +682,54 @@ def test_employment_rng_isolated_from_m4_m5_and_m7_income_rng() -> None:
     )
     assert base_decision.evaluations[0].controlled_noise == employment_decision.evaluations[0].controlled_noise
     assert base.states[1].consequences[0].to_dict() == with_employment.states[1].consequences[0].to_dict()
+
+
+def test_different_search_intensity_does_not_perturb_other_rng_streams() -> None:
+    base = with_income(IncomeStream("maybe", Decimal("0.00"), "weekly", 0.5))
+    low = replace(base, employment=replace(base.employment, job_search_intensity=20.0))
+    high = replace(base, employment=replace(base.employment, job_search_intensity=80.0))
+    consequence = ConsequenceCatalog(
+        (
+            OptionConsequenceDefinition(
+                event_id="choice_event",
+                event_version="1",
+                option_id="chosen",
+                outcomes=(
+                    OutcomeDefinition(
+                        "normal",
+                        0.5,
+                        effects=(StateEffectDefinition(path="mental.stress", delta=1.0),),
+                    ),
+                    OutcomeDefinition(
+                        "hard",
+                        0.5,
+                        effects=(StateEffectDefinition(path="mental.stress", delta=4.0),),
+                    ),
+                ),
+            ),
+        )
+    )
+    transitions = (
+        PassiveCashflowTransition(PassiveCashflowEngine()),
+        EmploymentMarketTransition(EmploymentMarketEngine(load_employment_catalog(EMPLOYMENT))),
+        EventEngineTransition(EventEngine(event_catalog())),
+        DecisionEngineTransition(DecisionEngine()),
+        DecisionConsequenceTransition(ConsequenceEngine(consequence)),
+    )
+
+    low_result = LifeSimEngine(config(seed=29), transitions=transitions).run(initial_agent=low)
+    high_result = LifeSimEngine(config(seed=29), transitions=transitions).run(initial_agent=high)
+
+    assert low_result.states[1].passive_records[0].to_dict() == high_result.states[1].passive_records[0].to_dict()
+    assert low_result.states[1].event_traces[0].to_dict() == high_result.states[1].event_traces[0].to_dict()
+    low_choice = next(
+        decision for decision in low_result.states[1].decisions if decision.source_event_id == "choice_event"
+    )
+    high_choice = next(
+        decision for decision in high_result.states[1].decisions if decision.source_event_id == "choice_event"
+    )
+    assert low_choice.evaluations[0].controlled_noise == high_choice.evaluations[0].controlled_noise
+    assert low_result.states[1].consequences[0].to_dict() == high_result.states[1].consequences[0].to_dict()
 
 
 def test_runtime_duplicate_processing_and_repeated_engine_runs_are_deterministic() -> None:
@@ -518,6 +877,36 @@ def event_definition() -> EventDefinition:
     )
 
 
+def opening_event(job_definition: JobDefinition, *, week: int) -> EventOccurrence:
+    return EventOccurrence(
+        event_id=f"employment_opening:{job_definition.job_id}:{job_definition.version}",
+        version="1",
+        week=week,
+        category="employment",
+        effective_weight=1.0,
+        title="Opening",
+        summary="Opening.",
+        tags=("employment",),
+        options=(
+            EventOption(
+                option_id="apply",
+                label="Apply",
+                summary="Apply.",
+                expected_weekly_financial_gain=job_definition.hourly_rate
+                * Decimal(str(job_definition.weekly_hours)),
+                ongoing_weekly_time_hours=job_definition.weekly_hours,
+                future_value=0.5,
+            ),
+            EventOption(
+                option_id="skip",
+                label="Skip",
+                summary="Skip.",
+                short_term_value=0.1,
+            ),
+        ),
+    )
+
+
 def decision(event, chosen_option_id: str) -> DecisionRecord:
     return DecisionRecord(
         decision_id=f"decision_{event.event_id}_{chosen_option_id}".replace(":", "_"),
@@ -598,6 +987,21 @@ def with_income(*streams: IncomeStream):
 
 
 def employed_state(state, *, contract_id: str = "contract_test", end_week_exclusive: int = 0):
+    return employed_state_with_job(
+        state,
+        contract_id=contract_id,
+        end_week_exclusive=end_week_exclusive,
+        source_job_id="test_job",
+    )
+
+
+def employed_state_with_job(
+    state,
+    *,
+    contract_id: str = "contract_test",
+    end_week_exclusive: int = 0,
+    source_job_id: str = "test_job",
+):
     return replace(
         state,
         employment=EmploymentState(
@@ -606,7 +1010,7 @@ def employed_state(state, *, contract_id: str = "contract_test", end_week_exclus
             employer="Test Employer",
             weekly_hours=20.0,
             job_search_intensity=0.0,
-            source_job_id="test_job",
+            source_job_id=source_job_id,
             source_job_version="1",
             contract_id=contract_id,
             contract_type="fixed_term",
@@ -626,3 +1030,7 @@ def NoneSafePassiveRuntime():
     from lifesim.passive import PassiveLifeRuntimeState
 
     return PassiveLifeRuntimeState()
+
+
+def component(evaluation: OptionEvaluation, name: str) -> DecisionScoreComponent:
+    return next(item for item in evaluation.components if item.name == name)

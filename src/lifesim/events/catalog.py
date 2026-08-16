@@ -92,6 +92,11 @@ def _parse_option(raw: dict[str, Any]) -> EventOption:
         ),
         estimated_cost=_money(raw.get("estimated_cost", "0.00"), "estimated_cost"),
         requires_full_estimated_cost=raw.get("requires_full_estimated_cost", True),
+        expected_weekly_financial_gain=_money(
+            raw.get("expected_weekly_financial_gain", "0.00"),
+            "expected_weekly_financial_gain",
+        ),
+        ongoing_weekly_time_hours=raw.get("ongoing_weekly_time_hours", 0.0),
         time_cost_hours=raw["time_cost_hours"],
         energy_cost=raw["energy_cost"],
         short_term_value=raw["short_term_value"],

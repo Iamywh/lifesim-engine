@@ -8,10 +8,12 @@ from random import Random
 from lifesim.agents.state import AgentState, EmploymentState, FinancialState, IncomeStream
 from lifesim.decisions.model import DecisionRecord
 from lifesim.employment.model import (
+    ACTIVE_APPLICATION_STATUSES,
     ApplicationStageRecord,
     CandidateFitTrace,
     EmploymentBoundaryRecord,
     EmploymentCatalog,
+    EmploymentDiscoveryDraw,
     EmploymentEffectApplication,
     EmploymentHistory,
     EmploymentMarketRecord,
@@ -94,15 +96,20 @@ class EmploymentMarketEngine:
 
         offer_events = _offer_events_for_available_applications(applications, self._catalog, context.week)
         events.extend(offer_events)
-        discovered, candidates = _discover_jobs(state, context, EmploymentRuntimeState(
-            history=runtime.history,
-            applications=tuple(applications),
-            scheduled_starts=runtime.scheduled_starts,
-            processed_market_weeks=runtime.processed_market_weeks,
-            processed_decision_ids=runtime.processed_decision_ids,
-            processed_boundary_weeks=runtime.processed_boundary_weeks,
-            processed_work_weeks=runtime.processed_work_weeks,
-        ), self._catalog)
+        discovered, candidates, discovery_draws = _discover_jobs(
+            state,
+            context,
+            EmploymentRuntimeState(
+                history=runtime.history,
+                applications=tuple(applications),
+                scheduled_starts=runtime.scheduled_starts,
+                processed_market_weeks=runtime.processed_market_weeks,
+                processed_decision_ids=runtime.processed_decision_ids,
+                processed_boundary_weeks=runtime.processed_boundary_weeks,
+                processed_work_weeks=runtime.processed_work_weeks,
+            ),
+            self._catalog,
+        )
         opening_events = tuple(_opening_event(job, context.week) for job in discovered)
         events.extend(opening_events)
         record = EmploymentMarketRecord(
@@ -110,6 +117,7 @@ class EmploymentMarketEngine:
             candidates=candidates,
             discovered_job_keys=tuple(_job_key(job) for job in discovered),
             event_ids_created=tuple(event.event_id for event in events),
+            discovery_draws=discovery_draws,
         )
         history = EmploymentHistory(
             market_records=runtime.history.market_records + (record,),
@@ -149,9 +157,11 @@ class EmploymentProcessEngine:
         scheduled_starts = list(runtime.scheduled_starts)
         stage_records = []
         processed = list(runtime.processed_decision_ids)
+        accepted_offer = False
         for decision in context.decisions:
             if not isinstance(decision, DecisionRecord) or not _is_employment_event(decision.source_event_id):
                 continue
+            event = _validate_employment_decision(state, context, decision, applications)
             if decision.decision_id in processed:
                 raise ValueError(f"Employment decision '{decision.decision_id}' already processed.")
             processed.append(decision.decision_id)
@@ -172,6 +182,15 @@ class EmploymentProcessEngine:
                 )
                 scheduled_starts = starts
                 stage_records.extend(record)
+                accepted_offer = decision.chosen_option_id == "accept_offer"
+            if event.category != "employment":
+                raise ValueError("Expected employment decision event category to be employment.")
+        if accepted_offer:
+            applications, closures = _close_active_applications_after_acceptance(
+                applications,
+                context.week,
+            )
+            stage_records.extend(closures)
         history = EmploymentHistory(
             market_records=runtime.history.market_records,
             application_records=runtime.history.application_records + tuple(stage_records),
@@ -202,7 +221,7 @@ class EmploymentProcessEngine:
             if any(
                 application.job_id == job_id
                 and application.job_version == version
-                and application.status in {"SUBMITTED", "INTERVIEW_INVITED", "INTERVIEW_ATTENDED", "OFFER_AVAILABLE"}
+                and application.status in ACTIVE_APPLICATION_STATUSES
                 for application in applications
             ):
                 raise ValueError("Expected only one active application for a job opening.")
@@ -329,7 +348,7 @@ class EmploymentProcessEngine:
             for other_index, other in enumerate(tuple(applications)):
                 if other.application_id == application.application_id:
                     continue
-                if other.status in {"SUBMITTED", "INTERVIEW_INVITED", "INTERVIEW_ATTENDED", "OFFER_AVAILABLE"}:
+                if other.status in ACTIVE_APPLICATION_STATUSES:
                     closed = replace(other, status="WITHDRAWN", updated_week=context.week)
                     applications[other_index] = closed
                     records.append(
@@ -405,12 +424,28 @@ class EmploymentBoundaryEngine:
             raise ValueError("Expected at most one due employment start.")
         if due_starts:
             start = due_starts[0]
+            replacing_contract_id = next_state.employment.contract_id
+            if next_state.employment.status == "employed" and replacing_contract_id:
+                records.append(
+                    EmploymentBoundaryRecord(
+                        week=context.week,
+                        action="contract_replaced",
+                        contract_id=replacing_contract_id,
+                        role_title=next_state.employment.role_title,
+                        employer=next_state.employment.employer,
+                        income_stream_id=replacing_contract_id,
+                    )
+                )
             next_state = replace(
                 next_state,
                 financial=_remove_employment_stream(
                     next_state.financial,
-                    next_state.employment.contract_id,
+                    replacing_contract_id,
                 ),
+            )
+            next_state = replace(
+                next_state,
+                financial=_remove_employment_stream(next_state.financial, start.contract_id),
             )
             weekly_wage = _weekly_wage(start.hourly_rate, start.weekly_hours)
             stream = IncomeStream(
@@ -595,22 +630,35 @@ def _discover_jobs(
     context: WeeklyContext,
     runtime: EmploymentRuntimeState,
     catalog: EmploymentCatalog,
-) -> tuple[tuple[JobDefinition, ...], tuple[MarketCandidateTrace, ...]]:
+) -> tuple[tuple[JobDefinition, ...], tuple[MarketCandidateTrace, ...], tuple[EmploymentDiscoveryDraw, ...]]:
     intensity = state.employment.job_search_intensity / 100.0
     if intensity <= 0:
-        return (), tuple(
-            MarketCandidateTrace(job.job_id, job.version, False, 0.0, "no_search_intensity")
-            for job in catalog.jobs
+        return (
+            (),
+            tuple(
+                MarketCandidateTrace(job.job_id, job.version, False, 0.0, "no_search_intensity")
+                for job in catalog.jobs
+            ),
+            tuple(
+                EmploymentDiscoveryDraw(
+                    slot=slot,
+                    trigger_probability=0.0,
+                    trigger_roll=_market_trigger_roll(state, context, slot),
+                    triggered=False,
+                )
+                for slot in range(catalog.max_discoveries_per_week)
+            ),
         )
     active_keys = {
         (application.job_id, application.job_version)
         for application in runtime.applications
-        if application.status in {"SUBMITTED", "INTERVIEW_INVITED", "INTERVIEW_ATTENDED", "OFFER_AVAILABLE"}
+        if application.status in ACTIVE_APPLICATION_STATUSES
     }
+    if state.employment.status == "employed":
+        active_keys.add((state.employment.source_job_id, state.employment.source_job_version))
     recently_seen = _recently_seen(runtime.history, context.week, catalog.relisting_cooldown_weeks)
     candidates = []
     weighted: list[tuple[JobDefinition, float]] = []
-    city_factor = 0.75 + state.social.city_familiarity / 400.0
     for job in catalog.jobs:
         key = (job.job_id, job.version)
         if key in active_keys:
@@ -619,7 +667,7 @@ def _discover_jobs(
         if key in recently_seen:
             candidates.append(MarketCandidateTrace(job.job_id, job.version, False, 0.0, "relisting_cooldown"))
             continue
-        weight = round(job.base_discovery_weight * intensity * city_factor, 12)
+        weight = round(job.base_discovery_weight, 12)
         eligible = weight > 0
         candidates.append(
             MarketCandidateTrace(
@@ -633,14 +681,35 @@ def _discover_jobs(
         if eligible:
             weighted.append((job, weight))
     selected = []
+    discovery_draws: list[EmploymentDiscoveryDraw] = []
     available = list(weighted)
     for slot in range(min(catalog.max_discoveries_per_week, len(available))):
+        trigger_probability = _market_trigger_probability(state, catalog)
+        trigger_roll = _market_trigger_roll(state, context, slot)
+        if trigger_roll > trigger_probability:
+            discovery_draws.append(
+                EmploymentDiscoveryDraw(
+                    slot=slot,
+                    trigger_probability=trigger_probability,
+                    trigger_roll=trigger_roll,
+                    triggered=False,
+                )
+            )
+            continue
         total = sum(weight for _, weight in available)
         if total <= 0:
+            discovery_draws.append(
+                EmploymentDiscoveryDraw(
+                    slot=slot,
+                    trigger_probability=trigger_probability,
+                    trigger_roll=trigger_roll,
+                    triggered=False,
+                )
+            )
             break
         rng = Random(
             derive_stable_seed(
-                "employment-market",
+                "employment-market-selection",
                 str(context.config.simulation.seed),
                 state.identity.agent_id,
                 str(context.week),
@@ -656,8 +725,47 @@ def _discover_jobs(
                 chosen_index = index
                 break
         selected.append(available[chosen_index][0])
+        discovery_draws.append(
+            EmploymentDiscoveryDraw(
+                slot=slot,
+                trigger_probability=trigger_probability,
+                trigger_roll=trigger_roll,
+                triggered=True,
+                total_weight=round(total, 12),
+                selection_roll=round(roll, 12),
+                selected_job_key=_job_key(available[chosen_index][0]),
+            )
+        )
         del available[chosen_index]
-    return tuple(selected), tuple(candidates)
+    for slot in range(len(discovery_draws), catalog.max_discoveries_per_week):
+        discovery_draws.append(
+            EmploymentDiscoveryDraw(
+                slot=slot,
+                trigger_probability=_market_trigger_probability(state, catalog),
+                trigger_roll=_market_trigger_roll(state, context, slot),
+                triggered=False,
+            )
+        )
+    return tuple(selected), tuple(candidates), tuple(discovery_draws)
+
+
+def _market_trigger_probability(state: AgentState, catalog: EmploymentCatalog) -> float:
+    intensity = state.employment.job_search_intensity / 100.0
+    city_modifier = 0.85 + state.social.city_familiarity / 500.0
+    return round(min(0.9, max(0.0, catalog.base_market_discovery_probability * intensity * city_modifier)), 12)
+
+
+def _market_trigger_roll(state: AgentState, context: WeeklyContext, slot: int) -> float:
+    rng = Random(
+        derive_stable_seed(
+            "employment-market-trigger",
+            str(context.config.simulation.seed),
+            state.identity.agent_id,
+            str(context.week),
+            str(slot),
+        )
+    )
+    return round(rng.random(), 12)
 
 
 def _recently_seen(history: EmploymentHistory, week: int, cooldown: int) -> set[tuple[str, str]]:
@@ -671,6 +779,7 @@ def _recently_seen(history: EmploymentHistory, week: int, cooldown: int) -> set[
 
 
 def _opening_event(job: JobDefinition, week: int) -> EventOccurrence:
+    weekly_wage = _weekly_wage(job.hourly_rate, job.weekly_hours)
     return EventOccurrence(
         event_id=f"{APPLICATION_PREFIX}{job.job_id}:{job.version}",
         version="1",
@@ -687,6 +796,8 @@ def _opening_event(job: JobDefinition, week: int) -> EventOccurrence:
                 summary="Spend time and energy applying for this job.",
                 estimated_cost=Decimal("0.00"),
                 requires_full_estimated_cost=False,
+                expected_weekly_financial_gain=weekly_wage,
+                ongoing_weekly_time_hours=job.weekly_hours,
                 time_cost_hours=2.0,
                 energy_cost=8.0,
                 short_term_value=-0.05,
@@ -780,6 +891,8 @@ def _offer_event(job: JobDefinition, application: JobApplication, week: int) -> 
                 summary="Accept the job and start next week.",
                 estimated_cost=Decimal("0.00"),
                 requires_full_estimated_cost=False,
+                expected_weekly_financial_gain=weekly_wage,
+                ongoing_weekly_time_hours=job.weekly_hours,
                 time_cost_hours=1.0,
                 energy_cost=4.0,
                 short_term_value=0.2,
@@ -824,6 +937,75 @@ def _offer_events_for_available_applications(
     if job is None:
         raise ValueError("Expected offer application to reference a known job.")
     return (_offer_event(job, application, week),)
+
+
+def _validate_employment_decision(
+    state: AgentState,
+    context: WeeklyContext,
+    decision: DecisionRecord,
+    applications: list[JobApplication],
+) -> EventOccurrence:
+    if decision.agent_id != state.identity.agent_id:
+        raise ValueError("Employment decision does not belong to the current agent.")
+    if decision.week != context.week:
+        raise ValueError("Expected employment decision week to match WeeklyContext.week.")
+    event = next(
+        (
+            occurrence
+            for occurrence in context.events
+            if isinstance(occurrence, EventOccurrence)
+            and occurrence.event_id == decision.source_event_id
+            and occurrence.version == decision.source_event_version
+        ),
+        None,
+    )
+    if event is None:
+        raise ValueError("Expected employment decision to reference a same-week event.")
+    if event.category != "employment":
+        raise ValueError("Expected employment decision event category to be employment.")
+    option_ids = {option.option_id for option in event.options}
+    if decision.chosen_option_id not in option_ids:
+        raise ValueError("Expected employment decision chosen option to exist on its event.")
+    if decision.source_event_id.startswith(APPLICATION_PREFIX):
+        if decision.chosen_option_id not in {"apply", "skip"}:
+            raise ValueError("Expected opening decision option to be apply or skip.")
+    elif decision.source_event_id.startswith(INTERVIEW_PREFIX):
+        if decision.chosen_option_id not in {"attend_interview", "decline_interview"}:
+            raise ValueError("Expected interview decision option to be attend_interview or decline_interview.")
+        _, application = _find_application(applications, _parse_single_key(decision.source_event_id, INTERVIEW_PREFIX))
+        if application.status != "INTERVIEW_INVITED":
+            raise ValueError("Expected interview decision to reference an invited application.")
+    elif decision.source_event_id.startswith(OFFER_PREFIX):
+        if decision.chosen_option_id not in {"accept_offer", "decline_offer"}:
+            raise ValueError("Expected offer decision option to be accept_offer or decline_offer.")
+        _, application = _find_application(applications, _parse_single_key(decision.source_event_id, OFFER_PREFIX))
+        if application.status != "OFFER_AVAILABLE":
+            raise ValueError("Expected offer decision to reference an available offer.")
+    else:
+        raise ValueError("Unsupported employment decision event.")
+    return event
+
+
+def _close_active_applications_after_acceptance(
+    applications: list[JobApplication],
+    week: int,
+) -> tuple[list[JobApplication], tuple[ApplicationStageRecord, ...]]:
+    output = list(applications)
+    records = []
+    for index, application in enumerate(tuple(output)):
+        if application.status in ACTIVE_APPLICATION_STATUSES:
+            closed = replace(application, status="WITHDRAWN", updated_week=week)
+            output[index] = closed
+            records.append(
+                _stage_record(
+                    closed,
+                    week,
+                    "APPLICATION_CLOSED",
+                    "closed_after_same_week_offer_acceptance",
+                    None,
+                )
+            )
+    return output, tuple(records)
 
 
 def _probability_audit(
@@ -881,7 +1063,7 @@ def candidate_fit(state: AgentState, job: JobDefinition, *, stage: str = "interv
         skill_score = min(1.0, weighted / total_weight / 1.15) if total_weight else 0.5
     else:
         skill_score = 0.5
-    city_modifier = min(0.05, state.social.city_familiarity / 100.0 * 0.05)
+    city_modifier = 0.0
     education_modifier = 0.03 if state.education.status == "enrolled" else 0.0
     personality_modifier = 0.0
     stress_modifier = 0.0

@@ -67,6 +67,8 @@ class IncomeStream(SerializableState):
         _require_non_empty(self.source_type, "source_type")
         if not isinstance(self.source_id, str):
             raise TypeError("Expected 'source_id' to be a string.")
+        if self.source_type == "employment":
+            _require_non_empty(self.source_id, "source_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,7 +344,14 @@ class EmploymentState(SerializableState):
         _require_non_negative_integer(self.tenure_weeks, "tenure_weeks")
         _require_non_negative_integer(self.end_week_exclusive, "end_week_exclusive")
         if self.status == "employed":
-            for name in ("role_title", "employer", "source_job_id", "contract_id", "contract_type"):
+            for name in (
+                "role_title",
+                "employer",
+                "source_job_id",
+                "source_job_version",
+                "contract_id",
+                "contract_type",
+            ):
                 _require_non_empty(getattr(self, name), name)
             if self.weekly_hours <= 0:
                 raise ValueError("Expected employed weekly_hours to be > 0.")
@@ -350,10 +359,30 @@ class EmploymentState(SerializableState):
                 raise ValueError("Expected employed hourly_rate to be > 0.")
             if self.start_week <= 0:
                 raise ValueError("Expected employed start_week to be > 0.")
+            if self.end_week_exclusive and self.end_week_exclusive <= self.start_week:
+                raise ValueError("Expected employed end_week_exclusive to be 0 or after start_week.")
         else:
-            if self.weekly_hours == 0:
-                return
-            raise ValueError("Expected non-employed weekly_hours to be 0.")
+            if self.weekly_hours != 0:
+                raise ValueError("Expected non-employed weekly_hours to be 0.")
+            stale_fields = (
+                self.role_title,
+                self.employer,
+                self.source_job_id,
+                self.source_job_version,
+                self.contract_id,
+                self.contract_type,
+            )
+            if any(stale_fields):
+                raise ValueError("Expected non-employed contract text fields to be empty.")
+            if self.hourly_rate != Decimal("0.00") or self.stability != 0.0:
+                raise ValueError("Expected non-employed contract terms to be empty.")
+            if any(
+                value != 0.0
+                for value in (self.physical_demand, self.mental_demand, self.social_demand)
+            ):
+                raise ValueError("Expected non-employed work demands to be 0.")
+            if self.start_week or self.tenure_weeks or self.end_week_exclusive:
+                raise ValueError("Expected non-employed timing fields to be 0.")
 
 
 @dataclass(frozen=True, slots=True)
