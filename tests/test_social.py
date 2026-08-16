@@ -169,6 +169,38 @@ def test_no_opportunity_week_is_valid_and_has_no_event() -> None:
     assert runtime.history.interaction_records == (execution,)
 
 
+def test_social_execution_rejects_fresh_runtime_without_planning() -> None:
+    with pytest.raises(ValueError, match="planning"):
+        social_engine().execute(
+            load_agent_state(MAYA_SCENARIO),
+            context(),
+            SocialRuntimeState(),
+        )
+
+
+def test_social_execution_requires_real_decision_when_planning_created_event() -> None:
+    state, runtime, event = planned_social_state(seed=4)
+
+    with pytest.raises(ValueError, match="decision"):
+        social_engine().execute(state, context(seed=4, events=(event,)), runtime)
+
+
+def test_social_execution_rejects_tampered_runtime_with_cleared_planned_fields() -> None:
+    state, runtime, event = planned_social_state(seed=4)
+    tampered = SocialRuntimeState(
+        history=runtime.history,
+        processed_planning_weeks=runtime.processed_planning_weeks,
+    )
+    decision = decide(state, event, next(option.option_id for option in event.options))
+
+    with pytest.raises(ValueError, match="planned fields"):
+        social_engine().execute(
+            state,
+            context(seed=4, events=(event,), decisions=(decision,)),
+            tampered,
+        )
+
+
 def test_known_social_execution_mutates_only_allowed_state_surfaces() -> None:
     state, runtime, event = planned_social_state(seed=4)
     option_id = next(option.option_id for option in event.options if option.option_id.startswith("connect:"))
@@ -357,7 +389,7 @@ def test_support_choice_coexists_with_connect_and_is_not_forced() -> None:
         needs=replace(load_agent_state(MAYA_SCENARIO).needs, belonging=30.0),
         routine=RoutineState(current_profile_id="social_week"),
     )
-    _, event, _ = plan_until_option(pressured, "seek_support:tomas", start_seed=1)
+    runtime, event, _ = plan_until_option(pressured, "seek_support:tomas", start_seed=1)
     option_ids = {option.option_id for option in event.options}
 
     assert "connect:tomas" in option_ids
@@ -366,7 +398,7 @@ def test_support_choice_coexists_with_connect_and_is_not_forced() -> None:
     next_state, _, record = social_engine().execute(
         pressured,
         context(events=(event,), decisions=(connect_decision,)),
-        planned_runtime_for(event),
+        runtime,
     )
     assert next_state.social != pressured.social
     assert record.interaction_type == "connect"
@@ -677,15 +709,6 @@ def planned_social_state(*, seed: int):
     runtime, event, _ = engine.plan(state, context(seed=seed), SocialRuntimeState())
     assert event is not None
     return state, runtime, event
-
-
-def planned_runtime_for(event):
-    return SocialRuntimeState(
-        planned_event_id=event.event_id,
-        planned_event_version=event.version,
-        planned_option_ids=tuple(option.option_id for option in event.options),
-        planned_week=event.week,
-    )
 
 
 def plan_until_option(state, option_id: str, *, start_seed: int, week: int = 1):

@@ -217,7 +217,10 @@ class SocialEngine:
     ) -> tuple[AgentState, SocialRuntimeState, SocialInteractionRecord]:
         if context.week in runtime.processed_execution_weeks:
             raise ValueError(f"Social execution already processed for week {context.week}.")
-        if runtime.planned_week is None:
+        planning_record = _planning_record_for_execution(runtime, context.week)
+        if not planning_record.event_id and not planning_record.event_version and not planning_record.option_ids:
+            if runtime.planned_week is not None or runtime.planned_event_id or runtime.planned_event_version or runtime.planned_option_ids:
+                raise ValueError("Expected cleared social planned fields for a no-opportunity planning record.")
             record = SocialInteractionRecord(
                 week=context.week,
                 decision_id="",
@@ -232,8 +235,23 @@ class SocialEngine:
                 processed_execution_weeks=runtime.processed_execution_weeks + (context.week,),
             )
             return state, runtime, record
+        if not planning_record.event_id or not planning_record.event_version or not planning_record.option_ids:
+            raise ValueError("Expected social planning record event fields to be all present or all empty.")
+        if (
+            runtime.planned_week is None
+            or not runtime.planned_event_id
+            or not runtime.planned_event_version
+            or not runtime.planned_option_ids
+        ):
+            raise ValueError("Expected social runtime planned fields to match the planning record.")
         if runtime.planned_week != context.week:
             raise ValueError("Expected planned social week to match execution week.")
+        if (
+            runtime.planned_event_id != planning_record.event_id
+            or runtime.planned_event_version != planning_record.event_version
+            or runtime.planned_option_ids != planning_record.option_ids
+        ):
+            raise ValueError("Expected social runtime planned fields to match the planning record.")
         decision, event = _find_social_decision(state, context, runtime)
         if decision.decision_id in runtime.processed_decision_ids:
             raise ValueError(f"Social decision '{decision.decision_id}' already processed.")
@@ -421,6 +439,18 @@ def _runtime(context: WeeklyContext) -> SocialRuntimeState:
     if not isinstance(runtime, SocialRuntimeState):
         raise TypeError("Expected WeeklyContext.social_runtime to contain SocialRuntimeState.")
     return runtime
+
+
+def _planning_record_for_execution(
+    runtime: SocialRuntimeState,
+    week: int,
+) -> SocialPlanningRecord:
+    if week not in runtime.processed_planning_weeks:
+        raise ValueError("Expected social planning to be processed before social execution.")
+    records = tuple(record for record in runtime.history.planning_records if record.week == week)
+    if len(records) != 1:
+        raise ValueError("Expected exactly one social planning record before social execution.")
+    return records[0]
 
 
 def _planned_routine(
