@@ -71,6 +71,7 @@ learning_value = 0.55
 health_value = -0.06
 comfort_value = -0.08
 goal_tags = ["education", "stability"]
+behavior_tags = ["study"]
 
 [[profiles.practice]]
 skill_name = "written communication"
@@ -91,6 +92,7 @@ learning_value = 0.78
 health_value = -0.14
 comfort_value = -0.22
 goal_tags = ["education", "achievement"]
+behavior_tags = ["study"]
 
 [[profiles.practice]]
 skill_name = "research"
@@ -111,6 +113,7 @@ learning_value = 0.18
 health_value = 0.08
 comfort_value = 0.22
 goal_tags = ["education", "recovery"]
+behavior_tags = ["study"]
 
 [[profiles]]
 profile_id = "admin_skill_focus"
@@ -127,6 +130,7 @@ learning_value = 0.62
 health_value = -0.08
 comfort_value = -0.1
 goal_tags = ["education", "career", "skills"]
+behavior_tags = ["study", "skill_practice"]
 
 [[profiles.practice]]
 skill_name = "spreadsheets"
@@ -152,6 +156,7 @@ learning_value = 0.58
 health_value = -0.06
 comfort_value = -0.08
 goal_tags = ["education", "language", "belonging"]
+behavior_tags = ["study", "skill_practice"]
 
 [[profiles.practice]]
 skill_name = "local language"
@@ -172,6 +177,7 @@ learning_value = 0.18
 health_value = 0.04
 comfort_value = 0.2
 goal_tags = ["skills", "recovery"]
+behavior_tags = ["light_development", "skill_practice"]
 
 [[profiles.practice]]
 skill_name = "local language"

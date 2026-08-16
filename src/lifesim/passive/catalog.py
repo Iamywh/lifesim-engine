@@ -50,6 +50,7 @@ def _parse_profile(raw: dict[str, Any]) -> RoutineProfile:
         social_contact=raw.get("social_contact", 0.0),
         physical_activity=raw.get("physical_activity", 0.0),
         recovery_intensity=raw.get("recovery_intensity", 0.0),
+        behavior_tags=tuple(raw.get("behavior_tags", ())),
     )
 
 

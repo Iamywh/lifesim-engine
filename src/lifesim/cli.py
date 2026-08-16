@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+from lifesim.adaptation.catalog import load_adaptation_catalog
+from lifesim.adaptation.engine import AdaptationEngine, AdaptationTransition
 from lifesim.agents.scenario import load_agent_state
 from lifesim.config import load_config
 from lifesim.consequences.catalog import load_consequence_catalog
@@ -100,6 +102,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("configs/social/starter.toml"),
         help="Path to a social relationship catalog TOML file used when an agent scenario is supplied.",
     )
+    parser.add_argument(
+        "--adaptation-catalog",
+        type=Path,
+        default=Path("configs/adaptation/starter.toml"),
+        help="Path to an adaptation catalog TOML file used when an agent scenario is supplied.",
+    )
     return parser
 
 
@@ -128,6 +136,7 @@ def main() -> None:
             load_social_catalog(args.social_catalog),
             routine_catalog=routine_catalog,
         )
+        adaptation_engine = AdaptationEngine(load_adaptation_catalog(args.adaptation_catalog))
         decision_engine = DecisionEngine()
         transitions = (
             ScheduledConsequenceTransition(consequence_engine),
@@ -148,6 +157,7 @@ def main() -> None:
             DevelopmentExecutionTransition(development_engine),
             SocialExecutionTransition(social_engine),
             RoutineExecutionTransition(routine_engine),
+            AdaptationTransition(adaptation_engine),
         )
     result = LifeSimEngine(config, transitions=transitions).run(initial_agent=initial_agent)
     output = result.to_dict()

@@ -98,6 +98,7 @@ class DevelopmentProfile(SerializableState):
     health_value: float = 0.0
     comfort_value: float = 0.0
     goal_tags: tuple[str, ...] = ()
+    behavior_tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("profile_id", "label", "summary"):
@@ -139,6 +140,7 @@ class DevelopmentProfile(SerializableState):
                 _finite_number(getattr(self, name), name, minimum=0.0, maximum=1.0),
             )
         object.__setattr__(self, "goal_tags", _string_sequence(self.goal_tags, "goal_tags"))
+        object.__setattr__(self, "behavior_tags", _string_sequence(self.behavior_tags, "behavior_tags"))
 
     @property
     def total_hours(self) -> float:

@@ -107,6 +107,7 @@ class EventOption(SerializableState):
     health_value: float = 0.0
     comfort_value: float = 0.0
     goal_tags: tuple[str, ...] = ()
+    behavior_tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.option_id, "option_id")
@@ -162,6 +163,7 @@ class EventOption(SerializableState):
                 _finite_number(getattr(self, field_name), field_name, minimum=0.0, maximum=1.0),
             )
         object.__setattr__(self, "goal_tags", _string_sequence(self.goal_tags, "goal_tags"))
+        object.__setattr__(self, "behavior_tags", _string_sequence(self.behavior_tags, "behavior_tags"))
 
 
 @dataclass(frozen=True, slots=True)

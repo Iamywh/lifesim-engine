@@ -433,11 +433,22 @@ class Habit(SerializableState):
     name: str
     cadence: str
     strength: float
+    habit_id: str = ""
+    behavior_tags: tuple[str, ...] = ()
+    formed_week: int = 0
+    last_reinforced_week: int = 0
 
     def __post_init__(self) -> None:
         _require_non_empty(self.name, "name")
         _require_non_empty(self.cadence, "cadence")
         _require_percent(self.strength, "strength")
+        if not isinstance(self.habit_id, str):
+            raise TypeError("Expected 'habit_id' to be a string.")
+        if not self.habit_id:
+            object.__setattr__(self, "habit_id", self.name.lower().replace(" ", "_"))
+        object.__setattr__(self, "behavior_tags", _string_sequence(self.behavior_tags, "behavior_tags"))
+        _require_non_negative_integer(self.formed_week, "formed_week")
+        _require_non_negative_integer(self.last_reinforced_week, "last_reinforced_week")
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,6 +459,12 @@ class HabitsState(SerializableState):
     def __post_init__(self) -> None:
         _require_percent(self.routine_stability, "routine_stability")
         _freeze_tuple(self, "items")
+        for item in self.items:
+            if not isinstance(item, Habit):
+                raise TypeError("Expected habits items to contain Habit values.")
+        ids = tuple(item.habit_id for item in self.items)
+        if len(ids) != len(set(ids)):
+            raise ValueError("Expected habit IDs to be unique.")
 
 
 @dataclass(frozen=True, slots=True)

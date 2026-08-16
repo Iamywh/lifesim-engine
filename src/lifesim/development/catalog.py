@@ -96,6 +96,7 @@ def _parse_profile(raw: dict[str, Any]) -> DevelopmentProfile:
         health_value=raw.get("health_value", 0.0),
         comfort_value=raw.get("comfort_value", 0.0),
         goal_tags=tuple(raw.get("goal_tags", ())),
+        behavior_tags=tuple(raw.get("behavior_tags", ())),
     )
 
 

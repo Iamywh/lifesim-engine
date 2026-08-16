@@ -810,6 +810,7 @@ def _opening_event(job: JobDefinition, week: int) -> EventOccurrence:
                 health_value=-job.physical_demand * 0.08,
                 comfort_value=-0.15,
                 goal_tags=("finance", "stability", "career"),
+                behavior_tags=("job_search",),
             ),
             EventOption(
                 option_id="skip",
@@ -856,6 +857,7 @@ def _interview_event(job: JobDefinition, application: JobApplication, week: int)
                 learning_value=0.16,
                 comfort_value=-0.2,
                 goal_tags=("finance", "career", "stability"),
+                behavior_tags=("career_followthrough",),
             ),
             EventOption(
                 option_id="decline_interview",
@@ -905,6 +907,7 @@ def _offer_event(job: JobDefinition, application: JobApplication, week: int) -> 
                 health_value=-(job.physical_demand + job.mental_demand) * 0.05,
                 comfort_value=-0.1,
                 goal_tags=("finance", "career", "stability"),
+                behavior_tags=("career_followthrough",),
             ),
             EventOption(
                 option_id="decline_offer",

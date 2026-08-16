@@ -182,11 +182,13 @@ last_interaction_week = 0
 routine_stability = 34.0
 
 [[agent.habits.items]]
+habit_id = "morning_planning"
 name = "morning planning"
 cadence = "most weekdays"
 strength = 35.0
 
 [[agent.habits.items]]
+habit_id = "evening_expense_notes"
 name = "evening expense notes"
 cadence = "several times per week"
 strength = 29.0
