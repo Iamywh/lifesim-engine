@@ -47,6 +47,7 @@ def _parse_contact(raw: dict[str, Any]) -> SocialContactDefinition:
         remote_contact=raw.get("remote_contact", False),
         initial_closeness=raw.get("initial_closeness", 18.0),
         initial_trust=raw.get("initial_trust", 18.0),
+        encounter_weight=raw.get("encounter_weight", 1.0),
         tags=tuple(raw.get("tags", ())),
     )
 

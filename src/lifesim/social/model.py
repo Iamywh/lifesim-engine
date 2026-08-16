@@ -22,11 +22,14 @@ class SocialContactDefinition(SerializableState):
     remote_contact: bool = False
     initial_closeness: float = 18.0
     initial_trust: float = 18.0
+    encounter_weight: float = 1.0
     tags: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("contact_id", "name", "relationship", "context"):
             _require_non_empty(getattr(self, name), name)
+        if self.context not in {"existing", "general", "education", "employment"}:
+            raise ValueError("Expected social contact context to be one of existing, general, education, employment.")
         for name in (
             "base_availability",
             "proximity",
@@ -38,6 +41,11 @@ class SocialContactDefinition(SerializableState):
             object.__setattr__(self, name, _finite_number(getattr(self, name), name, minimum=0.0, maximum=1.0))
         for name in ("initial_closeness", "initial_trust"):
             object.__setattr__(self, name, _finite_number(getattr(self, name), name, minimum=0.0, maximum=100.0))
+        object.__setattr__(
+            self,
+            "encounter_weight",
+            _finite_number(self.encounter_weight, "encounter_weight", minimum=0.000001, maximum=100.0),
+        )
         if not isinstance(self.remote_contact, bool):
             raise TypeError("Expected remote_contact to be bool.")
         object.__setattr__(self, "tags", _string_sequence(self.tags, "tags"))
@@ -108,11 +116,25 @@ class SocialSupportNetworkAudit(SerializableState):
     target: float
     after: float
     connection_count: int
+    meaningful_contributor_ids: tuple[str, ...] = ()
+    meaningful_contributor_scores: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("before", "target", "after"):
             object.__setattr__(self, name, _finite_number(getattr(self, name), name, minimum=0.0, maximum=100.0))
         object.__setattr__(self, "connection_count", _integer(self.connection_count, "connection_count", minimum=0, maximum=1000))
+        object.__setattr__(
+            self,
+            "meaningful_contributor_ids",
+            _string_sequence(self.meaningful_contributor_ids, "meaningful_contributor_ids"),
+        )
+        scores = tuple(
+            _finite_number(value, "meaningful_contributor_scores", minimum=0.0, maximum=100.0)
+            for value in self.meaningful_contributor_scores
+        )
+        object.__setattr__(self, "meaningful_contributor_scores", scores)
+        if len(self.meaningful_contributor_ids) != len(self.meaningful_contributor_scores):
+            raise ValueError("Expected support contributor ids and scores to have matching lengths.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,12 +166,58 @@ class SocialAvailabilityAudit(SerializableState):
 
 
 @dataclass(frozen=True, slots=True)
+class SocialKnownSelectionCandidate(SerializableState):
+    connection_id: str
+    weight: float
+    surfaced: bool
+    slot: int = -1
+
+    def __post_init__(self) -> None:
+        _require_non_empty(self.connection_id, "connection_id")
+        object.__setattr__(self, "weight", _finite_number(self.weight, "weight", minimum=0.0, maximum=1000.0))
+        if not isinstance(self.surfaced, bool):
+            raise TypeError("Expected surfaced to be bool.")
+        object.__setattr__(self, "slot", _integer(self.slot, "slot", minimum=-1, maximum=1000))
+
+
+@dataclass(frozen=True, slots=True)
+class SocialKnownSelectionDraw(SerializableState):
+    slot: int
+    roll: float
+    total_weight: float
+    selected_connection_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "slot", _integer(self.slot, "slot", minimum=0, maximum=1000))
+        object.__setattr__(self, "roll", _finite_number(self.roll, "roll", minimum=0.0, maximum=1000000.0))
+        object.__setattr__(self, "total_weight", _finite_number(self.total_weight, "total_weight", minimum=0.000001, maximum=1000000.0))
+        _require_non_empty(self.selected_connection_id, "selected_connection_id")
+
+
+@dataclass(frozen=True, slots=True)
+class SocialEncounterCandidateWeight(SerializableState):
+    contact_id: str
+    encounter_weight: float
+
+    def __post_init__(self) -> None:
+        _require_non_empty(self.contact_id, "contact_id")
+        object.__setattr__(
+            self,
+            "encounter_weight",
+            _finite_number(self.encounter_weight, "encounter_weight", minimum=0.000001, maximum=100.0),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class SocialEncounterAudit(SerializableState):
     probability: float
     roll: float
     triggered: bool
     selected_contact_id: str = ""
     eligible_contact_ids: tuple[str, ...] = ()
+    candidate_weights: tuple[SocialEncounterCandidateWeight, ...] = ()
+    total_weight: float = 0.0
+    selection_roll: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "probability", _finite_number(self.probability, "probability", minimum=0.0, maximum=1.0))
@@ -159,6 +227,18 @@ class SocialEncounterAudit(SerializableState):
         if not isinstance(self.selected_contact_id, str):
             raise TypeError("Expected selected_contact_id to be a string.")
         object.__setattr__(self, "eligible_contact_ids", _string_sequence(self.eligible_contact_ids, "eligible_contact_ids"))
+        object.__setattr__(
+            self,
+            "candidate_weights",
+            _typed_tuple(self.candidate_weights, SocialEncounterCandidateWeight, "candidate_weights"),
+        )
+        object.__setattr__(self, "total_weight", _finite_number(self.total_weight, "total_weight", minimum=0.0, maximum=1000000.0))
+        if self.selection_roll is not None:
+            object.__setattr__(self, "selection_roll", _finite_number(self.selection_roll, "selection_roll", minimum=0.0, maximum=1000000.0))
+        if self.triggered and self.total_weight <= 0.0:
+            raise ValueError("Expected triggered encounter selection to have positive total weight.")
+        if not self.triggered and self.selection_roll is not None:
+            raise ValueError("Expected no encounter selection roll when trigger did not occur.")
         if self.selected_contact_id and self.selected_contact_id not in self.eligible_contact_ids:
             raise ValueError("Expected selected encounter contact to be eligible.")
 
@@ -173,6 +253,8 @@ class SocialPlanningRecord(SerializableState):
     option_ids: tuple[str, ...]
     availability: tuple[SocialAvailabilityAudit, ...]
     encounter: SocialEncounterAudit
+    known_selection_candidates: tuple[SocialKnownSelectionCandidate, ...] = ()
+    known_selection_draws: tuple[SocialKnownSelectionDraw, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "week", _integer(self.week, "week", minimum=1, maximum=1000000))
@@ -185,6 +267,24 @@ class SocialPlanningRecord(SerializableState):
         object.__setattr__(self, "availability", _typed_tuple(self.availability, SocialAvailabilityAudit, "availability"))
         if not isinstance(self.encounter, SocialEncounterAudit):
             raise TypeError("Expected encounter to be SocialEncounterAudit.")
+        object.__setattr__(
+            self,
+            "known_selection_candidates",
+            _typed_tuple(
+                self.known_selection_candidates,
+                SocialKnownSelectionCandidate,
+                "known_selection_candidates",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "known_selection_draws",
+            _typed_tuple(
+                self.known_selection_draws,
+                SocialKnownSelectionDraw,
+                "known_selection_draws",
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)

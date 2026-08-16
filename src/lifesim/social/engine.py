@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, replace
 
@@ -17,9 +18,12 @@ from lifesim.social.model import (
     SocialCatalog,
     SocialContactDefinition,
     SocialEncounterAudit,
+    SocialEncounterCandidateWeight,
     SocialHistory,
     SocialInteractionOutcomeAudit,
     SocialInteractionRecord,
+    SocialKnownSelectionCandidate,
+    SocialKnownSelectionDraw,
     SocialMaintenanceChange,
     SocialMaintenanceRecord,
     SocialOutcomeProbability,
@@ -32,6 +36,8 @@ from lifesim.weekly import WeeklyContext, WeeklyTransitionResult
 
 SOCIAL_EVENT_ID = "weekly_social_focus"
 SOCIAL_EVENT_VERSION = "1"
+MIN_AVAILABILITY_PROBABILITY = 0.02
+MAX_AVAILABILITY_PROBABILITY = 0.95
 
 
 class SocialEngine:
@@ -61,13 +67,12 @@ class SocialEngine:
         for connection in state.social.connections:
             definition = _definition_or_default(self._catalog, connection)
             gap = max(0, context.week - connection.last_interaction_week)
-            closeness_loss = max(0.0, (gap - 4.0) * (1.0 - definition.neglect_resistance) * 0.22)
-            trust_loss = max(0.0, (gap - 8.0) * (1.0 - definition.neglect_resistance) * 0.08)
+            closeness_loss, trust_loss = _neglect_losses(connection, definition, gap)
             strain_cooling = min(connection.strain, 1.0 + definition.neglect_resistance * 0.8)
             next_connection = replace(
                 connection,
                 closeness=_clamp(connection.closeness - closeness_loss),
-                trust=_clamp((connection.trust or connection.closeness) - trust_loss),
+                trust=_clamp(_trust(connection) - trust_loss),
                 strain=_clamp(connection.strain - strain_cooling),
             )
             if next_connection != connection:
@@ -76,21 +81,23 @@ class SocialEngine:
                         connection_id=connection.connection_id,
                         closeness_before=connection.closeness,
                         closeness_after=next_connection.closeness,
-                        trust_before=connection.trust or connection.closeness,
-                        trust_after=next_connection.trust or next_connection.closeness,
+                        trust_before=_trust(connection),
+                        trust_after=_trust(next_connection),
                         strain_before=connection.strain,
                         strain_after=next_connection.strain,
                         reason="neglect_drift_and_strain_cooling",
                     )
                 )
             connections.append(next_connection)
-        target = _support_network_target(tuple(connections), self._catalog)
+        target, contributor_ids, contributor_scores = _support_network_target(tuple(connections), self._catalog)
         support_after = _clamp(state.social.support_network_strength + (target - state.social.support_network_strength) * 0.18)
         support_audit = SocialSupportNetworkAudit(
             before=state.social.support_network_strength,
             target=target,
             after=support_after,
             connection_count=len(connections),
+            meaningful_contributor_ids=contributor_ids,
+            meaningful_contributor_scores=contributor_scores,
         )
         social = replace(
             state.social,
@@ -130,18 +137,24 @@ class SocialEngine:
             for connection in state.social.connections
         )
         available_by_id = {audit.connection_id for audit in availability if audit.available}
+        selected_connections, selection_candidates, selection_draws = _select_known_connections(
+            context,
+            state,
+            tuple(
+                connection
+                for connection in state.social.connections
+                if connection.connection_id in available_by_id
+            ),
+            self._catalog,
+        )
         known_options = tuple(
-            _known_option(state, connection)
-            for connection in _select_known_connections(
-                context,
+            option
+            for connection in selected_connections
+            for option in _known_options(
                 state,
-                tuple(
-                    connection
-                    for connection in state.social.connections
-                    if connection.connection_id in available_by_id
-                ),
-                self._catalog,
-            )[: self._catalog.max_known_options]
+                connection,
+                _definition_or_default(self._catalog, connection),
+            )
         )
         encounter = _encounter_audit(context, state, self._catalog, routine_social_contact, runtime.history)
         encounter_options: tuple[EventOption, ...] = ()
@@ -182,6 +195,8 @@ class SocialEngine:
             option_ids=option_ids,
             availability=availability,
             encounter=encounter,
+            known_selection_candidates=selection_candidates,
+            known_selection_draws=selection_draws,
         )
         runtime = replace(
             runtime,
@@ -337,7 +352,7 @@ class SocialEngine:
             )
             relationship_changes = (
                 RelationshipChange(contact_id, "closeness", 0.0, new_connection.closeness),
-                RelationshipChange(contact_id, "trust", 0.0, new_connection.trust or new_connection.closeness),
+                RelationshipChange(contact_id, "trust", 0.0, _trust(new_connection)),
                 RelationshipChange(contact_id, "last_interaction_week", 0.0, float(context.week)),
             )
         state_effects = _interaction_state_effects(next_state, "engage", outcome.selected_outcome_id)
@@ -441,8 +456,8 @@ def _availability_audit(
         - connection.strain / 100.0 * 0.18
         - state.mental.stress / 100.0 * 0.04
     )
-    probability = _clamp01(probability)
-    rng = _rng(context, "social-known-availability", connection.connection_id)
+    probability = _bounded_probability(probability)
+    rng = _rng(context, state, "social-known-availability", connection.connection_id)
     roll = rng.random()
     return SocialAvailabilityAudit(
         connection_id=connection.connection_id,
@@ -452,58 +467,179 @@ def _availability_audit(
     )
 
 
+def _neglect_losses(
+    connection: SocialConnection,
+    definition: SocialContactDefinition,
+    gap: int,
+) -> tuple[float, float]:
+    if gap <= 4:
+        return 0.0, 0.0
+    trust = _trust(connection)
+    strength = (connection.closeness + trust) / 200.0
+    vulnerability = 0.55 + (1.0 - strength) * 0.35
+    if definition.remote_contact:
+        vulnerability *= 0.7
+    closeness_pressure = 1.0 - math.exp(-(gap - 4.0) / 26.0)
+    trust_pressure = 0.0 if gap <= 8 else 1.0 - math.exp(-(gap - 8.0) / 40.0)
+    resistance = 1.0 - definition.neglect_resistance
+    closeness_loss = 0.55 * closeness_pressure * resistance * vulnerability
+    trust_loss = 0.28 * trust_pressure * resistance * vulnerability
+    return round(closeness_loss, 6), round(trust_loss, 6)
+
+
 def _select_known_connections(
     context: WeeklyContext,
     state: AgentState,
     connections: tuple[SocialConnection, ...],
     catalog: SocialCatalog,
-) -> tuple[SocialConnection, ...]:
-    weighted: list[tuple[float, SocialConnection]] = []
+) -> tuple[
+    tuple[SocialConnection, ...],
+    tuple[SocialKnownSelectionCandidate, ...],
+    tuple[SocialKnownSelectionDraw, ...],
+]:
+    remaining = sorted(connections, key=lambda item: item.connection_id)
+    weights_by_id: dict[str, float] = {}
     for connection in connections:
-        definition = _definition_or_default(catalog, connection)
-        weight = (
-            0.5
-            + connection.closeness / 100.0
-            + (connection.trust or connection.closeness) / 150.0
-            + definition.supportiveness * 0.25
-            - connection.strain / 160.0
-            + state.personality.social_need / 300.0
+        weights_by_id[connection.connection_id] = _known_selection_weight(
+            connection,
+            _definition_or_default(catalog, connection),
+            context.week,
         )
-        rng = _rng(context, "social-known-selection", connection.connection_id)
-        weighted.append((max(0.001, weight) + rng.random() * 0.0001, connection))
-    return tuple(connection for _, connection in sorted(weighted, key=lambda item: (-item[0], item[1].connection_id)))
+    selected: list[SocialConnection] = []
+    draws: list[SocialKnownSelectionDraw] = []
+    rng = _rng(context, state, "social-known-selection")
+    for slot in range(min(catalog.max_known_options, len(remaining))):
+        total_weight = sum(weights_by_id[connection.connection_id] for connection in remaining)
+        if total_weight <= 0.0:
+            break
+        roll = rng.random() * total_weight
+        cursor = 0.0
+        for index, connection in enumerate(remaining):
+            cursor += weights_by_id[connection.connection_id]
+            if roll <= cursor:
+                selected.append(connection)
+                draws.append(
+                    SocialKnownSelectionDraw(
+                        slot=slot,
+                        roll=roll,
+                        total_weight=total_weight,
+                        selected_connection_id=connection.connection_id,
+                    )
+                )
+                remaining.pop(index)
+                break
+    slot_by_id = {connection.connection_id: slot for slot, connection in enumerate(selected)}
+    candidates = tuple(
+        SocialKnownSelectionCandidate(
+            connection_id=connection.connection_id,
+            weight=weights_by_id[connection.connection_id],
+            surfaced=connection.connection_id in slot_by_id,
+            slot=slot_by_id.get(connection.connection_id, -1),
+        )
+        for connection in sorted(connections, key=lambda item: item.connection_id)
+    )
+    return tuple(selected), candidates, tuple(draws)
 
 
-def _known_option(state: AgentState, connection: SocialConnection) -> EventOption:
-    option_id = f"connect:{connection.connection_id}"
-    label = f"Connect with {connection.name}"
-    summary = "Spend modest time maintaining an existing relationship."
+def _known_selection_weight(
+    connection: SocialConnection,
+    definition: SocialContactDefinition,
+    week: int,
+) -> float:
+    gap = max(0, week - connection.last_interaction_week)
+    recency_pressure = min(0.3, max(0.0, (gap - 3.0) / 80.0))
+    weight = (
+        0.08
+        + connection.closeness / 95.0
+        + _trust(connection) / 125.0
+        + definition.supportiveness * 0.2
+        + recency_pressure
+        - connection.strain / 115.0
+    )
+    return round(max(0.02, weight), 12)
+
+
+def _known_options(
+    state: AgentState,
+    connection: SocialConnection,
+    definition: SocialContactDefinition,
+) -> tuple[EventOption, ...]:
+    options = [_known_option(state, connection, definition, action="connect")]
     need_support = (
         state.mental.stress >= 58.0
         or state.mental.loneliness >= 58.0
         or state.needs.belonging <= 42.0
     )
-    if need_support and (connection.trust or connection.closeness) >= 45.0 and connection.strain <= 45.0:
+    if need_support and _trust(connection) >= 45.0 and connection.closeness >= 35.0 and connection.strain <= 45.0:
+        options.append(_known_option(state, connection, definition, action="seek_support"))
+    return tuple(options)
+
+
+def _known_option(
+    state: AgentState,
+    connection: SocialConnection,
+    definition: SocialContactDefinition,
+    *,
+    action: str,
+) -> EventOption:
+    quality = _relationship_quality(connection)
+    trust = _trust(connection)
+    strain = connection.strain
+    remote_time_factor = 0.65 if definition.remote_contact else 1.0
+    relationship_value = _clamp01(
+        quality * 0.72
+        + definition.supportiveness * 0.14
+        + (0.08 if connection.relationship in {"friend_from_home", "flatmate"} else 0.0)
+    )
+    risk = _clamp01(0.06 + strain / 130.0 + definition.volatility * 0.18 - trust / 500.0)
+    uncertainty = _clamp01(0.08 + strain / 140.0 + (100.0 - trust) / 260.0 - connection.closeness / 420.0)
+    comfort = _bounded_signal(-0.12 + quality * 0.75 - strain / 150.0)
+    if action == "seek_support":
         option_id = f"seek_support:{connection.connection_id}"
         label = f"Seek support from {connection.name}"
         summary = "Ask for emotional or practical non-financial support."
+        time_hours = 2.0 * remote_time_factor
+        energy_cost = 8.0 * remote_time_factor + strain / 30.0
+        social_value = _bounded_signal(relationship_value + 0.12)
+        future_value = _bounded_signal(relationship_value * 0.55 + definition.supportiveness * 0.22)
+        social_pressure = 0.18
+    elif action == "connect":
+        option_id = f"connect:{connection.connection_id}"
+        label = f"Connect with {connection.name}"
+        summary = "Spend modest time maintaining an existing relationship."
+        time_hours = 2.0 * remote_time_factor
+        energy_cost = 6.5 * remote_time_factor + strain / 40.0
+        social_value = _bounded_signal(relationship_value)
+        future_value = _bounded_signal(relationship_value * 0.5 + connection.closeness / 300.0)
+        social_pressure = 0.1
+    else:
+        raise ValueError(f"Unexpected social action '{action}'.")
     return EventOption(
         option_id=option_id,
         label=label,
         summary=summary,
-        time_cost_hours=2.0,
-        energy_cost=7.0,
+        time_cost_hours=round(time_hours, 6),
+        energy_cost=round(energy_cost, 6),
         short_term_value=0.18,
-        future_value=0.18,
-        perceived_risk=0.18,
-        uncertainty=0.2,
-        social_value=0.55,
-        social_pressure=0.12,
+        future_value=future_value,
+        perceived_risk=risk,
+        uncertainty=uncertainty,
+        social_value=social_value,
+        social_pressure=social_pressure,
         autonomy_value=0.05,
         health_value=0.05,
-        comfort_value=0.12,
+        comfort_value=comfort,
         goal_tags=("social", "belonging"),
         requires_full_estimated_cost=False,
+    )
+
+
+def _relationship_quality(connection: SocialConnection) -> float:
+    return _clamp01(
+        connection.closeness / 100.0 * 0.46
+        + _trust(connection) / 100.0 * 0.42
+        - connection.strain / 100.0 * 0.3
+        + 0.08
     )
 
 
@@ -515,8 +651,9 @@ def _encounter_audit(
     history: SocialHistory,
 ) -> SocialEncounterAudit:
     known = {connection.connection_id for connection in state.social.connections}
+    empty_weights: tuple[SocialEncounterCandidateWeight, ...] = ()
     if len(known) >= catalog.max_network_size:
-        return SocialEncounterAudit(0.0, 1.0, False, "", ())
+        return SocialEncounterAudit(0.0, 1.0, False, "", (), empty_weights, 0.0, None)
     surfaced_recently = _recent_encounter_contact_ids(history, context.week, catalog.relisting_cooldown_weeks)
     eligible = tuple(
         contact
@@ -525,39 +662,52 @@ def _encounter_audit(
         and contact.contact_id not in surfaced_recently
         and _context_applicable(state, contact.context)
     )
+    candidate_weights = tuple(
+        SocialEncounterCandidateWeight(
+            contact_id=contact.contact_id,
+            encounter_weight=contact.encounter_weight,
+        )
+        for contact in eligible
+    )
+    total_weight = sum(weight.encounter_weight for weight in candidate_weights)
     if not eligible:
-        return SocialEncounterAudit(0.0, 1.0, False, "", ())
+        return SocialEncounterAudit(0.0, 1.0, False, "", (), empty_weights, 0.0, None)
     city_factor = 0.65 + state.social.city_familiarity / 200.0
     routine_factor = 0.45 + routine_social_contact * 0.85
     probability = _clamp01(catalog.base_new_encounter_probability * city_factor * routine_factor)
-    trigger_rng = _rng(context, "social-encounter-trigger")
+    trigger_rng = _rng(context, state, "social-encounter-trigger")
     roll = trigger_rng.random()
     triggered = roll <= probability
     selected = ""
+    selection_roll = None
     if triggered:
-        selected = _weighted_contact_selection(context, eligible)
+        selected, selection_roll = _weighted_contact_selection(context, state, eligible)
     return SocialEncounterAudit(
         probability=probability,
         roll=roll,
         triggered=triggered,
         selected_contact_id=selected,
         eligible_contact_ids=tuple(contact.contact_id for contact in eligible),
+        candidate_weights=candidate_weights,
+        total_weight=total_weight,
+        selection_roll=selection_roll,
     )
 
 
 def _weighted_contact_selection(
     context: WeeklyContext,
+    state: AgentState,
     contacts: tuple[SocialContactDefinition, ...],
-) -> str:
-    total = sum(contact.proximity + contact.responsiveness + 0.2 for contact in contacts)
-    rng = _rng(context, "social-encounter-selection")
+) -> tuple[str, float]:
+    total = sum(contact.encounter_weight for contact in contacts)
+    rng = _rng(context, state, "social-encounter-selection")
     roll = rng.random() * total
     cursor = 0.0
     for contact in sorted(contacts, key=lambda item: item.contact_id):
-        cursor += contact.proximity + contact.responsiveness + 0.2
+        cursor += contact.encounter_weight
         if roll <= cursor:
-            return contact.contact_id
-    return max(contacts, key=lambda item: item.contact_id).contact_id
+            return contact.contact_id, roll
+    return max(contacts, key=lambda item: item.contact_id).contact_id, roll
 
 
 def _encounter_option(definition: SocialContactDefinition) -> EventOption:
@@ -653,7 +803,7 @@ def _known_outcome(
 ) -> SocialInteractionOutcomeAudit:
     quality = (
         connection.closeness / 100.0 * 0.34
-        + (connection.trust or connection.closeness) / 100.0 * 0.3
+        + _trust(connection) / 100.0 * 0.3
         + definition.responsiveness * 0.2
         + definition.supportiveness * 0.16
         - connection.strain / 100.0 * 0.28
@@ -676,7 +826,7 @@ def _known_outcome(
             ("friction", friction),
         )
         namespace = "social-interaction"
-    return _roll_outcome(context, namespace, connection.connection_id, weights)
+    return _roll_outcome(context, state, namespace, connection.connection_id, weights)
 
 
 def _encounter_outcome(
@@ -696,11 +846,12 @@ def _encounter_outcome(
         ("neutral", 0.32),
         ("awkward", 0.14 + (1.0 - openness) * 0.28 + definition.volatility * 0.12),
     )
-    return _roll_outcome(context, "social-interaction", definition.contact_id, weights)
+    return _roll_outcome(context, state, "social-interaction", definition.contact_id, weights)
 
 
 def _roll_outcome(
     context: WeeklyContext,
+    state: AgentState,
     namespace: str,
     contact_id: str,
     raw_weights: tuple[tuple[str, float], ...],
@@ -710,7 +861,7 @@ def _roll_outcome(
         SocialOutcomeProbability(outcome_id=outcome_id, probability=max(0.0, weight) / total)
         for outcome_id, weight in raw_weights
     )
-    rng = _rng(context, namespace, contact_id)
+    rng = _rng(context, state, namespace, contact_id)
     roll = rng.random()
     cursor = 0.0
     selected = probabilities[-1].outcome_id
@@ -758,13 +909,13 @@ def _apply_known_outcome(
         next_connection = replace(
             connection,
             closeness=_clamp(connection.closeness + deltas[0]),
-            trust=_clamp((connection.trust or connection.closeness) + deltas[1]),
+            trust=_clamp(_trust(connection) + deltas[1]),
             strain=_clamp(connection.strain + deltas[2]),
             last_interaction_week=week,
         )
         for field, before, after in (
             ("closeness", connection.closeness, next_connection.closeness),
-            ("trust", connection.trust or connection.closeness, next_connection.trust or next_connection.closeness),
+            ("trust", _trust(connection), _trust(next_connection)),
             ("strain", connection.strain, next_connection.strain),
             ("last_interaction_week", float(connection.last_interaction_week), float(week)),
         ):
@@ -849,6 +1000,12 @@ def _state_value(state: AgentState, path: str) -> float:
     return float(value)
 
 
+def _trust(connection: SocialConnection) -> float:
+    if connection.trust is None:
+        return connection.closeness
+    return connection.trust
+
+
 def _definition_or_default(
     catalog: SocialCatalog,
     connection: SocialConnection,
@@ -869,31 +1026,41 @@ def _definition_or_default(
             neglect_resistance=0.4,
             remote_contact=connection.relationship.endswith("home"),
             initial_closeness=connection.closeness,
-            initial_trust=connection.trust or connection.closeness,
+            initial_trust=_trust(connection),
         )
 
 
 def _support_network_target(
     connections: tuple[SocialConnection, ...],
     catalog: SocialCatalog,
-) -> float:
-    weighted_scores = []
+) -> tuple[float, tuple[str, ...], tuple[float, ...]]:
+    weighted_scores: list[tuple[str, float]] = []
     for connection in connections:
         definition = _definition_or_default(catalog, connection)
-        quality = (
-            connection.closeness * 0.38
-            + (connection.trust or connection.closeness) * 0.34
-            + definition.supportiveness * 20.0
-            - connection.strain * 0.28
+        relationship_quality = _relationship_quality(connection)
+        quality = max(
+            0.0,
+            (
+                relationship_quality * 74.0
+                + definition.supportiveness * 18.0
+                - connection.strain * 0.45
+            ),
         )
-        weighted_scores.append(max(0.0, quality))
+        if relationship_quality >= 0.12:
+            weighted_scores.append((connection.connection_id, quality))
     if not weighted_scores:
-        return 0.0
-    top = sorted(weighted_scores, reverse=True)[:5]
+        return 0.0, (), ()
+    top = sorted(weighted_scores, key=lambda item: (-item[1], item[0]))[:5]
     total_weight = sum(1.0 / (index + 1) for index, _ in enumerate(top))
-    weighted = sum(score / (index + 1) for index, score in enumerate(top)) / total_weight
-    breadth_bonus = min(12.0, len(connections) * 1.8)
-    return _clamp(weighted + breadth_bonus)
+    weighted = sum(score / (index + 1) for index, (_, score) in enumerate(top)) / total_weight
+    meaningful_breadth = sum(min(1.0, score / 45.0) for _, score in top)
+    breadth_bonus = min(10.0, meaningful_breadth * 2.0)
+    target = _clamp(weighted + breadth_bonus)
+    return (
+        target,
+        tuple(connection_id for connection_id, _ in top),
+        tuple(round(score, 6) for _, score in top),
+    )
 
 
 def _connection(state: AgentState, contact_id: str) -> SocialConnection:
@@ -909,7 +1076,7 @@ def _context_applicable(state: AgentState, contact_context: str) -> bool:
     if contact_context == "education":
         return state.education.status == "enrolled"
     if contact_context == "employment":
-        return state.employment.status == "employed" or state.employment.job_search_intensity > 0.0
+        return state.employment.status == "employed"
     return False
 
 
@@ -928,11 +1095,12 @@ def _recent_encounter_contact_ids(
     return recent
 
 
-def _rng(context: WeeklyContext, namespace: str, *parts: str) -> random.Random:
+def _rng(context: WeeklyContext, state: AgentState, namespace: str, *parts: str) -> random.Random:
     seed = derive_stable_seed(
         namespace,
         str(context.config.simulation.seed),
         context.config.simulation.name,
+        state.identity.agent_id,
         str(context.week),
         *parts,
     )
@@ -945,3 +1113,14 @@ def _clamp(value: float, minimum: float = 0.0, maximum: float = 100.0) -> float:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, round(float(value), 12)))
+
+
+def _bounded_probability(value: float) -> float:
+    return max(
+        MIN_AVAILABILITY_PROBABILITY,
+        min(MAX_AVAILABILITY_PROBABILITY, round(float(value), 12)),
+    )
+
+
+def _bounded_signal(value: float) -> float:
+    return max(-1.0, min(1.0, round(float(value), 12)))
