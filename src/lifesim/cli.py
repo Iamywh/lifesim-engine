@@ -117,7 +117,7 @@ def main() -> None:
             EmploymentBoundaryTransition(EmploymentBoundaryEngine()),
             PassiveCashflowTransition(PassiveCashflowEngine()),
             RoutinePlanningTransition(routine_engine, decision_engine),
-            DevelopmentPlanningTransition(development_engine, decision_engine),
+            DevelopmentPlanningTransition(development_engine),
             EmploymentMarketTransition(EmploymentMarketEngine(employment_catalog)),
             EventEngineTransition(EventEngine(event_catalog)),
             DecisionEngineTransition(decision_engine),

@@ -65,6 +65,7 @@ def test_development_catalog_loads_and_validates_data() -> None:
 
     assert catalog.program("Urban Studies BA").progress_per_full_study_week == 1.6
     assert catalog.profile("reduced_study").education_hours == 8.0
+    assert catalog.profile("light_self_development").education_hours == 0.0
     with pytest.raises(ValueError, match="skill_name"):
         parse_development_catalog(catalog_raw(skills=[skill_raw("dup"), skill_raw("dup")]))
     with pytest.raises(ValueError, match="Unknown curriculum skill"):
@@ -112,52 +113,60 @@ def test_existing_state_is_backward_compatible_and_maya_unchanged() -> None:
     EducationState("completed", "Urban Studies BA", 3, 3, 100.0, 18.0)
 
 
-def test_planning_creates_one_weekly_development_event_and_uses_m4() -> None:
+def test_planning_creates_one_weekly_development_opportunity_without_deciding() -> None:
     maya = load_agent_state(MAYA_SCENARIO)
     engine = DevelopmentEngine(load_development_catalog(DEVELOPMENT))
-    runtime, event, history, decision = engine.plan(
+    runtime, event = engine.plan(
         maya,
         context(),
         DevelopmentRuntimeState(),
-        DecisionEngine(),
-        DecisionHistory(),
     )
 
     assert event.event_id == DEVELOPMENT_EVENT_ID
     assert event.category == "development"
-    assert len([event]) == 1
-    assert isinstance(decision, DecisionRecord)
-    assert decision in history.records
-    assert runtime.planned_decision == decision
+    assert len(event.options) == len(load_development_catalog(DEVELOPMENT).profiles)
+    assert runtime.history.plan_records[0].available_profile_ids == tuple(option.option_id for option in event.options)
+    assert runtime.planned_profile_ids == runtime.history.plan_records[0].available_profile_ids
+    assert runtime.planned_event_id == DEVELOPMENT_EVENT_ID
     assert not hasattr(engine, "decide")
+    assert not hasattr(runtime, "planned_decision")
+
+
+def test_normal_decision_engine_makes_weekly_development_choice() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    engine = DevelopmentEngine(load_development_catalog(DEVELOPMENT))
+    runtime, event = engine.plan(maya, context(), DevelopmentRuntimeState())
+    history = DecisionHistory()
+    result = DecisionEngine().decide_events(maya, replace(context(), events=(event,)), (event,), history)
+    decision = result.records[0]
+
+    assert isinstance(decision, DecisionRecord)
+    assert decision in result.history.records
+    assert runtime.planned_profile_ids
     assert "learning_value" in {component.name for component in decision.evaluations[0].components}
 
 
 def test_execution_requires_real_same_week_m4_decision_and_event() -> None:
     maya = load_agent_state(MAYA_SCENARIO)
     engine = DevelopmentEngine(load_development_catalog(DEVELOPMENT))
-    runtime, event, _, decision = engine.plan(
-        maya,
-        context(),
-        DevelopmentRuntimeState(),
-        DecisionEngine(),
-        DecisionHistory(),
-    )
+    runtime, event = engine.plan(maya, context(), DevelopmentRuntimeState())
+    decision = decide_development(maya, event)
 
     with pytest.raises(ValueError, match="same-week M4 decision"):
         engine.execute(maya, replace(context(), events=(event,)), runtime)
     with pytest.raises(ValueError, match="same-week event"):
         engine.execute(maya, replace(context(), decisions=(decision,)), runtime)
     with pytest.raises(ValueError, match="current agent"):
-        bad_runtime = replace(runtime, planned_decision=replace(decision, agent_id="other"))
-        engine.execute(maya, replace(context(), events=(event,), decisions=(bad_runtime.planned_decision,)), bad_runtime)
+        bad_decision = replace(decision, agent_id="other")
+        engine.execute(maya, replace(context(), events=(event,), decisions=(bad_decision,)), runtime)
     with pytest.raises(ValueError, match="match WeeklyContext.week"):
-        bad_runtime = replace(runtime, planned_decision=replace(decision, week=2))
-        engine.execute(maya, replace(context(), events=(event,), decisions=(bad_runtime.planned_decision,)), bad_runtime)
+        bad_decision = replace(decision, week=2)
+        engine.execute(maya, replace(context(), events=(event,), decisions=(bad_decision,)), runtime)
     with pytest.raises(ValueError, match="chosen option"):
         bad_decision = invalid_chosen_decision(decision, "missing")
-        bad_runtime = replace(runtime, planned_decision=bad_decision)
-        engine.execute(maya, replace(context(), events=(event,), decisions=(bad_runtime.planned_decision,)), bad_runtime)
+        engine.execute(maya, replace(context(), events=(event,), decisions=(bad_decision,)), runtime)
+    with pytest.raises(ValueError, match="exactly one"):
+        engine.execute(maya, replace(context(), events=(event,), decisions=(decision, decision)), runtime)
 
 
 def test_zero_more_and_stressed_study_progress_behave_smoothly() -> None:
@@ -178,6 +187,57 @@ def test_zero_more_and_stressed_study_progress_behave_smoothly() -> None:
     assert zero[2].education_progress.progress_delta == 0.0
     assert balanced[2].education_progress.progress_delta > light[2].education_progress.progress_delta
     assert 0.0 < stressed[2].education_progress.progress_delta < balanced[2].education_progress.progress_delta
+
+
+def test_completed_agents_only_see_zero_education_development_profiles() -> None:
+    catalog = load_development_catalog(DEVELOPMENT)
+    completed = completed_state(load_agent_state(MAYA_SCENARIO))
+    enrolled_runtime, enrolled_event = DevelopmentEngine(catalog).plan(
+        load_agent_state(MAYA_SCENARIO),
+        context(),
+        DevelopmentRuntimeState(),
+    )
+    completed_runtime, completed_event = DevelopmentEngine(catalog).plan(
+        completed,
+        context(),
+        DevelopmentRuntimeState(),
+    )
+
+    enrolled_ids = {option.option_id for option in enrolled_event.options}
+    completed_ids = {option.option_id for option in completed_event.options}
+    assert "balanced_study" in enrolled_ids
+    assert "intensive_study" in enrolled_ids
+    assert completed_ids == {"light_self_development"}
+    assert completed_runtime.history.plan_records[0].available_profile_ids == ("light_self_development",)
+    assert enrolled_runtime.history.plan_records[0].available_profile_ids != completed_runtime.history.plan_records[0].available_profile_ids
+
+
+def test_completed_agents_do_not_continue_formal_study_or_curriculum_xp() -> None:
+    completed = completed_state(load_agent_state(MAYA_SCENARIO))
+    next_state, _, record = execute_profile(completed, "light_self_development")
+
+    assert record.education_hours == 0.0
+    assert record.education_progress is None
+    assert next_state.education == completed.education
+    assert all(source.source_type != "education" for item in record.skill_developments for source in item.sources)
+    assert skill(next_state, "local language").experience > skill(completed, "local language").experience
+    assert effect(record, "health.energy").delta > -3.0
+
+
+def test_unavailable_completed_study_profile_is_rejected_at_execution() -> None:
+    catalog = load_development_catalog(DEVELOPMENT)
+    completed = completed_state(load_agent_state(MAYA_SCENARIO))
+    runtime, filtered_event = DevelopmentEngine(catalog).plan(completed, context(), DevelopmentRuntimeState())
+    _, full_event = DevelopmentEngine(catalog).plan(load_agent_state(MAYA_SCENARIO), context(), DevelopmentRuntimeState())
+    decision = replace(decide_development(load_agent_state(MAYA_SCENARIO), full_event), chosen_option_id="balanced_study")
+
+    assert "balanced_study" not in {option.option_id for option in filtered_event.options}
+    with pytest.raises(ValueError, match="planned profile ids"):
+        DevelopmentEngine(catalog).execute(
+            completed,
+            replace(context(), events=(full_event,), decisions=(decision,)),
+            runtime,
+        )
 
 
 def test_education_progress_clamps_advances_year_and_completes_without_rewards() -> None:
@@ -211,6 +271,17 @@ def test_curriculum_and_practice_create_missing_skills_and_gradual_growth() -> N
     assert all(item.level_after <= 100.0 for item in record.skill_developments)
 
 
+def test_existing_skill_categories_are_preserved_when_experience_changes() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    next_state, _, record = execute_profile(maya, "admin_skill_focus")
+    by_name = {skill.name: skill for skill in next_state.skills.items}
+    dev_by_name = {item.skill_name: item for item in record.skill_developments}
+
+    assert by_name["spreadsheets"].category == "technical"
+    assert dev_by_name["spreadsheets"].category == "technical"
+    assert by_name["research"].category == "academic"
+
+
 def test_higher_level_skill_has_stronger_diminishing_returns() -> None:
     base = load_agent_state(MAYA_SCENARIO)
     low = replace(base, skills=SkillsState(items=(SkillRating("spreadsheets", "work", 20.0, 0.0),)))
@@ -236,7 +307,8 @@ def test_completed_work_creates_relevant_xp_and_employment_without_work_does_not
         effects=(),
     )
     engine = DevelopmentEngine(catalog, employment_catalog=employment_catalog)
-    runtime, event, _, decision = engine.plan(employed, context(), DevelopmentRuntimeState(), DecisionEngine(), DecisionHistory())
+    runtime, event = engine.plan(employed, context(), DevelopmentRuntimeState())
+    decision = decide_development(employed, event)
     next_state, runtime, record = engine.execute(
         employed,
         replace(context(), events=(event,), decisions=(decision,), employment_records=(work,)),
@@ -246,19 +318,6 @@ def test_completed_work_creates_relevant_xp_and_employment_without_work_does_not
 
     assert skill(next_state, "customer service").experience > skill(no_work, "customer service").experience
     assert any(source.source_type == "work" for item in record.skill_developments for source in item.sources)
-    duplicate_runtime, duplicate_event, _, duplicate_decision = engine.plan(
-        employed,
-        context(),
-        DevelopmentRuntimeState(processed_work_record_keys=("contract_dev:1",)),
-        DecisionEngine(),
-        DecisionHistory(),
-    )
-    with pytest.raises(ValueError, match="already consumed"):
-        engine.execute(
-            employed,
-            replace(context(), events=(duplicate_event,), decisions=(duplicate_decision,), employment_records=(work,)),
-            duplicate_runtime,
-        )
 
 
 def test_missing_employment_catalog_or_job_fails_for_work_xp() -> None:
@@ -271,13 +330,12 @@ def test_missing_employment_catalog_or_job_fails_for_work_xp() -> None:
         tenure_weeks_after=1,
         effects=(),
     )
-    runtime, event, _, decision = DevelopmentEngine(dev_catalog()).plan(
+    runtime, event = DevelopmentEngine(dev_catalog()).plan(
         employed,
         context(),
         DevelopmentRuntimeState(),
-        DecisionEngine(),
-        DecisionHistory(),
     )
+    decision = decide_development(employed, event)
 
     with pytest.raises(ValueError, match="employment catalog"):
         DevelopmentEngine(dev_catalog()).execute(
@@ -370,6 +428,33 @@ def test_heavy_workload_costs_more_than_light_without_threshold_cliff() -> None:
     assert 0.0 < heavy[2].efficiency.final_efficiency < light[2].efficiency.final_efficiency
 
 
+def test_existing_employment_hours_increase_generic_m4_time_cost_pressure() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    working = employed_state(maya, weekly_hours=40.0)
+    _, event = DevelopmentEngine(dev_catalog()).plan(maya, context(), DevelopmentRuntimeState())
+
+    unemployed_decision = decide_development(maya, event)
+    working_decision = decide_development(working, event)
+    unemployed = evaluations_by_option(unemployed_decision)
+    employed = evaluations_by_option(working_decision)
+
+    unemployed_gap = abs(component(unemployed["intensive_study"], "time_cost").contribution) - abs(
+        component(unemployed["reduced_study"], "time_cost").contribution
+    )
+    employed_gap = abs(component(employed["intensive_study"], "time_cost").contribution) - abs(
+        component(employed["reduced_study"], "time_cost").contribution
+    )
+    assert employed_gap > unemployed_gap
+    assert working_decision.chosen_option_id in working_decision.available_option_ids
+    assert component(working_decision.evaluations[0], "time_cost").weight > component(
+        unemployed_decision.evaluations[0],
+        "time_cost",
+    ).weight
+    assert unemployed_decision.evaluations[0].controlled_noise == decide_development(maya, event).evaluations[
+        0
+    ].controlled_noise
+
+
 def test_development_mutation_boundaries() -> None:
     maya = load_agent_state(MAYA_SCENARIO)
     next_state, _, _ = execute_profile(maya, "balanced_study")
@@ -389,26 +474,50 @@ def test_development_mutation_boundaries() -> None:
 def test_runtime_exactly_once_and_consistency_guards() -> None:
     maya = load_agent_state(MAYA_SCENARIO)
     engine = DevelopmentEngine(dev_catalog())
-    runtime, event, _, decision = engine.plan(
-        maya,
-        context(),
-        DevelopmentRuntimeState(),
-        DecisionEngine(),
-        DecisionHistory(),
-    )
+    runtime, event = engine.plan(maya, context(), DevelopmentRuntimeState())
+    decision = decide_development(maya, event)
     with pytest.raises(ValueError, match="planning already processed"):
-        engine.plan(maya, context(), runtime, DecisionEngine(), DecisionHistory())
+        engine.plan(maya, context(), runtime)
     _, runtime, _ = engine.execute(maya, replace(context(), events=(event,), decisions=(decision,)), runtime)
     with pytest.raises(ValueError, match="execution already processed"):
         engine.execute(
             maya,
             replace(context(), events=(event,), decisions=(decision,)),
-            replace(runtime, planned_profile_id=decision.chosen_option_id, planned_decision=decision, planned_week=1),
+            replace(
+                runtime,
+                planned_event_id=DEVELOPMENT_EVENT_ID,
+                planned_event_version="1",
+                planned_profile_ids=(decision.chosen_option_id,),
+                planned_week=1,
+            ),
         )
     with pytest.raises(ValueError, match="planning weeks"):
         DevelopmentRuntimeState(history=runtime.history, processed_planning_weeks=(1, 2), processed_execution_weeks=(1,))
     with pytest.raises(ValueError, match="execution weeks"):
         DevelopmentRuntimeState(history=runtime.history, processed_planning_weeks=(1,), processed_execution_weeks=(1, 2))
+    with pytest.raises(ValueError, match="decision ids"):
+        DevelopmentRuntimeState(
+            history=runtime.history,
+            processed_planning_weeks=(1,),
+            processed_execution_weeks=(1,),
+            processed_decision_ids=(runtime.processed_decision_ids[0], "orphan"),
+        )
+    with pytest.raises(ValueError, match="decision ids"):
+        DevelopmentRuntimeState(
+            history=runtime.history,
+            processed_planning_weeks=(1,),
+            processed_execution_weeks=(1,),
+            processed_decision_ids=(),
+        )
+    consumed = runtime.processed_work_record_keys
+    with pytest.raises(ValueError, match="work record keys"):
+        DevelopmentRuntimeState(
+            history=runtime.history,
+            processed_planning_weeks=(1,),
+            processed_execution_weeks=(1,),
+            processed_decision_ids=runtime.processed_decision_ids,
+            processed_work_record_keys=consumed + ("orphan-work:1",),
+        )
 
 
 def test_repeated_runs_identical_and_m9_does_not_perturb_unrelated_rng() -> None:
@@ -422,7 +531,7 @@ def test_repeated_runs_identical_and_m9_does_not_perturb_unrelated_rng() -> None
     )
     m9_transitions = (
         PassiveCashflowTransition(PassiveCashflowEngine()),
-        DevelopmentPlanningTransition(DevelopmentEngine(dev_catalog()), DecisionEngine()),
+        DevelopmentPlanningTransition(DevelopmentEngine(dev_catalog())),
         EmploymentMarketTransition(EmploymentMarketEngine(load_employment_catalog(EMPLOYMENT))),
         EventEngineTransition(EventEngine(event_catalog())),
         DecisionEngineTransition(DecisionEngine()),
@@ -451,7 +560,8 @@ def test_integration_work_development_routine_and_candidate_fit_visibility() -> 
     engine = LifeSimEngine(
         config(duration_weeks=2, seed=12),
         transitions=(
-            DevelopmentPlanningTransition(DevelopmentEngine(dev_catalog(), employment_catalog=employment_catalog), DecisionEngine()),
+            DevelopmentPlanningTransition(DevelopmentEngine(dev_catalog(), employment_catalog=employment_catalog)),
+            DecisionEngineTransition(DecisionEngine()),
             EmploymentWorkTransition(EmploymentWorkEngine()),
             DevelopmentExecutionTransition(DevelopmentEngine(dev_catalog(), employment_catalog=employment_catalog)),
         ),
@@ -508,15 +618,8 @@ def execute_profile(
 ):
     catalog = catalog or dev_catalog()
     engine = DevelopmentEngine(catalog, employment_catalog=employment_catalog)
-    runtime, event, _, decision = engine.plan(
-        state,
-        context(),
-        DevelopmentRuntimeState(),
-        DecisionEngine(),
-        DecisionHistory(),
-    )
-    runtime = replace(runtime, planned_profile_id=profile_id, planned_decision=replace(decision, chosen_option_id=profile_id))
-    decision = runtime.planned_decision
+    runtime, event = engine.plan(state, context(), DevelopmentRuntimeState())
+    decision = replace(decide_development(state, event), chosen_option_id=profile_id)
     return engine.execute(
         state,
         replace(context(), events=(event,), decisions=(decision,), employment_records=employment_records),
@@ -541,6 +644,10 @@ def invalid_chosen_decision(decision: DecisionRecord, option_id: str) -> Decisio
         chosen_option_id=option_id,
         evaluations=(evaluation,),
     )
+
+
+def decide_development(state, event) -> DecisionRecord:
+    return DecisionEngine().decide_event(state, replace(context(), events=(event,)), event)
 
 
 def dev_catalog():
@@ -577,6 +684,28 @@ def skill_record(record, name: str):
 
 def effect(record, path: str):
     return next(item for item in record.effects if item.path == path)
+
+
+def component(evaluation, name: str):
+    return next(item for item in evaluation.components if item.name == name)
+
+
+def evaluations_by_option(decision: DecisionRecord):
+    return {evaluation.option_id: evaluation for evaluation in decision.evaluations}
+
+
+def completed_state(state):
+    return replace(
+        state,
+        education=EducationState(
+            status="completed",
+            program=state.education.program,
+            current_year=state.education.total_years,
+            total_years=state.education.total_years,
+            progress=100.0,
+            weekly_study_hours=state.education.weekly_study_hours,
+        ),
+    )
 
 
 def employed_state(state, *, job_id: str = "work_job", weekly_hours: float = 20.0):

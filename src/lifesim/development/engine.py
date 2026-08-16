@@ -4,8 +4,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from lifesim.agents.state import AgentState, EducationState, SkillRating, SkillsState
-from lifesim.decisions.engine import DecisionEngine
-from lifesim.decisions.model import DecisionHistory, DecisionRecord
+from lifesim.decisions.model import DecisionRecord
 from lifesim.development.model import (
     DevelopmentCatalog,
     DevelopmentEffectApplication,
@@ -45,32 +44,29 @@ class DevelopmentEngine:
         state: AgentState,
         context: WeeklyContext,
         runtime: DevelopmentRuntimeState,
-        decision_engine: DecisionEngine,
-        history: DecisionHistory,
-    ) -> tuple[DevelopmentRuntimeState, EventOccurrence, DecisionHistory, DecisionRecord]:
+    ) -> tuple[DevelopmentRuntimeState, EventOccurrence]:
         if context.week in runtime.processed_planning_weeks:
             raise ValueError(f"Development planning already processed for week {context.week}.")
-        occurrence = _development_occurrence(context, self._catalog)
-        decision = decision_engine.decide_event(state, context, occurrence)
-        if decision.chosen_option_id is None:
-            raise ValueError("Expected weekly development to choose an available profile.")
-        history = history.record((decision,))
+        profiles = _applicable_profiles(state, self._catalog)
+        if not profiles:
+            raise ValueError("Expected at least one applicable development profile.")
+        occurrence = _development_occurrence(context, profiles)
         record = DevelopmentPlanRecord(
             week=context.week,
             event_id=occurrence.event_id,
-            available_profile_ids=tuple(profile.profile_id for profile in self._catalog.profiles),
-            decision_id=decision.decision_id,
-            chosen_profile_id=decision.chosen_option_id,
+            event_version=occurrence.version,
+            available_profile_ids=tuple(profile.profile_id for profile in profiles),
         )
         runtime = replace(
             runtime,
             history=runtime.history.record_plan(record),
-            planned_profile_id=decision.chosen_option_id,
-            planned_decision=decision,
+            planned_event_id=occurrence.event_id,
+            planned_event_version=occurrence.version,
+            planned_profile_ids=record.available_profile_ids,
             planned_week=context.week,
             processed_planning_weeks=runtime.processed_planning_weeks + (context.week,),
         )
-        return runtime, occurrence, history, decision
+        return runtime, occurrence
 
     def execute(
         self,
@@ -82,14 +78,16 @@ class DevelopmentEngine:
             raise ValueError(f"Development execution already processed for week {context.week}.")
         if runtime.planned_week != context.week:
             raise ValueError("Expected planned development week to match execution week.")
-        if not runtime.planned_profile_id or runtime.planned_decision is None:
-            raise ValueError("Expected planned development decision before execution.")
-        event = _validate_development_decision(state, context, runtime.planned_decision)
-        profile = self._catalog.profile(runtime.planned_profile_id)
-        if runtime.planned_decision.chosen_option_id != profile.profile_id:
-            raise ValueError("Expected planned profile to match chosen development option.")
-        if runtime.planned_decision.decision_id in runtime.processed_decision_ids:
-            raise ValueError(f"Development decision '{runtime.planned_decision.decision_id}' already processed.")
+        if not runtime.planned_event_id or not runtime.planned_profile_ids:
+            raise ValueError("Expected planned development opportunity before execution.")
+        decision, event = _find_development_decision(state, context, runtime)
+        if decision.chosen_option_id is None:
+            raise ValueError("Expected weekly development decision to choose a profile.")
+        profile = self._catalog.profile(decision.chosen_option_id)
+        if decision.chosen_option_id not in runtime.planned_profile_ids:
+            raise ValueError("Expected development profile to have been offered during planning.")
+        if decision.decision_id in runtime.processed_decision_ids:
+            raise ValueError(f"Development decision '{decision.decision_id}' already processed.")
 
         efficiency = _efficiency(state, profile)
         sources, consumed_work_keys = self._experience_sources(state, context, runtime, profile, efficiency)
@@ -99,7 +97,7 @@ class DevelopmentEngine:
         record = DevelopmentWeekRecord(
             week=context.week,
             profile_id=profile.profile_id,
-            decision_id=runtime.planned_decision.decision_id,
+            decision_id=decision.decision_id,
             education_hours=profile.education_hours,
             practice=profile.practice,
             efficiency=efficiency,
@@ -111,8 +109,9 @@ class DevelopmentEngine:
         runtime = replace(
             runtime,
             history=runtime.history.record_week(record),
-            planned_profile_id="",
-            planned_decision=None,
+            planned_event_id="",
+            planned_event_version="",
+            planned_profile_ids=(),
             planned_week=None,
             processed_execution_weeks=runtime.processed_execution_weeks + (context.week,),
             processed_decision_ids=runtime.processed_decision_ids + (record.decision_id,),
@@ -140,27 +139,17 @@ class DevelopmentEngine:
 @dataclass(frozen=True, slots=True)
 class DevelopmentPlanningTransition:
     engine: DevelopmentEngine
-    decision_engine: DecisionEngine
 
     def apply(self, state: AgentState, context: WeeklyContext) -> WeeklyTransitionResult:
         runtime = _runtime(context)
-        history = context.decision_history
-        if history is None:
-            history = DecisionHistory()
-        if not isinstance(history, DecisionHistory):
-            raise TypeError("Expected WeeklyContext.decision_history to contain DecisionHistory.")
-        runtime, occurrence, history, decision = self.engine.plan(
+        runtime, occurrence = self.engine.plan(
             state,
             context,
             runtime,
-            self.decision_engine,
-            history,
         )
         return WeeklyTransitionResult(
             agent_state=state,
             events=(occurrence,),
-            decisions=(decision,),
-            decision_history=history,
             development_runtime=runtime,
         )
 
@@ -188,7 +177,29 @@ def _runtime(context: WeeklyContext) -> DevelopmentRuntimeState:
     return runtime
 
 
-def _development_occurrence(context: WeeklyContext, catalog: DevelopmentCatalog) -> EventOccurrence:
+def _applicable_profiles(
+    state: AgentState,
+    catalog: DevelopmentCatalog,
+) -> tuple[DevelopmentProfile, ...]:
+    enrolled_program_resolvable = False
+    if state.education.status == "enrolled":
+        try:
+            catalog.program(state.education.program)
+        except KeyError:
+            enrolled_program_resolvable = False
+        else:
+            enrolled_program_resolvable = True
+    return tuple(
+        profile
+        for profile in catalog.profiles
+        if profile.education_hours == 0.0 or enrolled_program_resolvable
+    )
+
+
+def _development_occurrence(
+    context: WeeklyContext,
+    profiles: tuple[DevelopmentProfile, ...],
+) -> EventOccurrence:
     return EventOccurrence(
         event_id=DEVELOPMENT_EVENT_ID,
         version=DEVELOPMENT_EVENT_VERSION,
@@ -198,7 +209,7 @@ def _development_occurrence(context: WeeklyContext, catalog: DevelopmentCatalog)
         title="Weekly development",
         summary="Choose a study and skill-practice focus for the week.",
         tags=("development", "education", "skills"),
-        options=tuple(_profile_option(profile) for profile in catalog.profiles),
+        options=tuple(_profile_option(profile) for profile in profiles),
     )
 
 
@@ -224,22 +235,27 @@ def _profile_option(profile: DevelopmentProfile) -> EventOption:
     )
 
 
-def _validate_development_decision(
+def _find_development_decision(
     state: AgentState,
     context: WeeklyContext,
-    decision: DecisionRecord,
-) -> EventOccurrence:
+    runtime: DevelopmentRuntimeState,
+) -> tuple[DecisionRecord, EventOccurrence]:
+    matches = tuple(
+        item
+        for item in context.decisions
+        if isinstance(item, DecisionRecord)
+        and item.source_event_id == runtime.planned_event_id
+        and item.source_event_version == runtime.planned_event_version
+    )
+    if len(matches) != 1:
+        raise ValueError("Expected exactly one same-week M4 decision for weekly development.")
+    decision = matches[0]
     if decision.agent_id != state.identity.agent_id:
         raise ValueError("Development decision does not belong to the current agent.")
     if decision.week != context.week:
         raise ValueError("Expected development decision week to match WeeklyContext.week.")
     if decision.source_event_id != DEVELOPMENT_EVENT_ID or decision.source_event_version != DEVELOPMENT_EVENT_VERSION:
         raise ValueError("Expected development decision to reference weekly_development.")
-    if not any(
-        isinstance(item, DecisionRecord) and item.decision_id == decision.decision_id
-        for item in context.decisions
-    ):
-        raise ValueError("Expected development execution to reference a same-week M4 decision.")
     event = next(
         (
             occurrence
@@ -252,12 +268,16 @@ def _validate_development_decision(
     )
     if event is None:
         raise ValueError("Expected development decision to reference a same-week event.")
+    if event.week != context.week:
+        raise ValueError("Expected development event week to match WeeklyContext.week.")
     if event.category != "development":
         raise ValueError("Expected development decision event category to be development.")
     option_ids = {option.option_id for option in event.options}
     if decision.chosen_option_id not in option_ids:
         raise ValueError("Expected development decision chosen option to exist on its event.")
-    return event
+    if option_ids != set(runtime.planned_profile_ids):
+        raise ValueError("Expected development event options to match planned profile ids.")
+    return decision, event
 
 
 def _efficiency(state: AgentState, profile: DevelopmentProfile) -> DevelopmentEfficiencyAudit:
@@ -425,6 +445,7 @@ def _apply_skill_development(
     for skill_name in sorted(by_skill):
         definition = catalog.skill(skill_name)
         current = existing.get(skill_name, SkillRating(skill_name, definition.category, 0.0, 0.0))
+        category = current.category if skill_name in existing else definition.category
         skill_sources = tuple(by_skill[skill_name])
         raw_gain = sum(source.raw_experience for source in skill_sources)
         effective_gain = _soft_cap(sum(source.effective_experience for source in skill_sources), 55.0)
@@ -434,14 +455,14 @@ def _apply_skill_development(
         experience_after = current.experience + raw_gain
         updated[skill_name] = SkillRating(
             name=skill_name,
-            category=definition.category,
+            category=category,
             level=round(level_after, 12),
             experience=round(experience_after, 12),
         )
         records.append(
             SkillDevelopmentRecord(
                 skill_name=skill_name,
-                category=definition.category,
+                category=category,
                 level_before=round(current.level, 12),
                 level_after=round(level_after, 12),
                 level_delta=round(level_after - current.level, 12),

@@ -156,3 +156,23 @@ goal_tags = ["education", "language", "belonging"]
 [[profiles.practice]]
 skill_name = "local language"
 hours = 5.0
+
+[[profiles]]
+profile_id = "light_self_development"
+label = "Light self-development"
+summary = "Keep a small learning thread alive without formal study hours."
+education_hours = 0.0
+energy_cost = 6.0
+short_term_value = 0.1
+future_value = 0.1
+perceived_risk = 0.08
+uncertainty = 0.12
+autonomy_value = 0.18
+learning_value = 0.18
+health_value = 0.04
+comfort_value = 0.2
+goal_tags = ["skills", "recovery"]
+
+[[profiles.practice]]
+skill_name = "local language"
+hours = 1.0

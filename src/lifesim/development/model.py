@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from lifesim.agents.state import SerializableState
-from lifesim.decisions.model import DecisionRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,22 +197,18 @@ class DevelopmentCatalog(SerializableState):
 class DevelopmentPlanRecord(SerializableState):
     week: int
     event_id: str
+    event_version: str
     available_profile_ids: tuple[str, ...]
-    decision_id: str
-    chosen_profile_id: str
 
     def __post_init__(self) -> None:
         _integer(self.week, "week", minimum=0)
         _require_non_empty(self.event_id, "event_id")
+        _require_non_empty(self.event_version, "event_version")
         object.__setattr__(
             self,
             "available_profile_ids",
             _string_sequence(self.available_profile_ids, "available_profile_ids"),
         )
-        _require_non_empty(self.decision_id, "decision_id")
-        _require_non_empty(self.chosen_profile_id, "chosen_profile_id")
-        if self.chosen_profile_id not in self.available_profile_ids:
-            raise ValueError("Expected chosen_profile_id to be one of available_profile_ids.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,8 +470,9 @@ class DevelopmentHistory:
 @dataclass(frozen=True, slots=True)
 class DevelopmentRuntimeState:
     history: DevelopmentHistory = field(default_factory=DevelopmentHistory)
-    planned_profile_id: str = ""
-    planned_decision: DecisionRecord | None = None
+    planned_event_id: str = ""
+    planned_event_version: str = ""
+    planned_profile_ids: tuple[str, ...] = ()
     planned_week: int | None = None
     processed_planning_weeks: tuple[int, ...] = ()
     processed_execution_weeks: tuple[int, ...] = ()
@@ -486,10 +482,13 @@ class DevelopmentRuntimeState:
     def __post_init__(self) -> None:
         if not isinstance(self.history, DevelopmentHistory):
             raise TypeError("Expected development history to be DevelopmentHistory.")
-        if not isinstance(self.planned_profile_id, str):
-            raise TypeError("Expected planned_profile_id to be a string.")
-        if self.planned_decision is not None and not isinstance(self.planned_decision, DecisionRecord):
-            raise TypeError("Expected planned_decision to be DecisionRecord.")
+        if not isinstance(self.planned_event_id, str):
+            raise TypeError("Expected planned_event_id to be a string.")
+        if not isinstance(self.planned_event_version, str):
+            raise TypeError("Expected planned_event_version to be a string.")
+        planned_profile_ids = _string_sequence(self.planned_profile_ids, "planned_profile_ids")
+        _require_unique(planned_profile_ids, "planned_profile_ids")
+        object.__setattr__(self, "planned_profile_ids", planned_profile_ids)
         if self.planned_week is not None:
             _integer(self.planned_week, "planned_week", minimum=1)
         for name in ("processed_planning_weeks", "processed_execution_weeks"):
@@ -502,12 +501,14 @@ class DevelopmentRuntimeState:
         work_keys = _string_sequence(self.processed_work_record_keys, "processed_work_record_keys")
         _require_unique(work_keys, "processed_work_record_keys")
         object.__setattr__(self, "processed_work_record_keys", work_keys)
-        if self.planned_decision is None and self.planned_profile_id:
-            raise ValueError("Expected planned development decision when profile id is set.")
-        if self.planned_decision is not None and not self.planned_profile_id:
-            raise ValueError("Expected planned profile id when development decision is set.")
-        if (self.planned_decision is None) != (self.planned_week is None):
-            raise ValueError("Expected planned development week to match decision presence.")
+        has_planned_event = bool(self.planned_event_id or self.planned_event_version or planned_profile_ids)
+        if has_planned_event:
+            _require_non_empty(self.planned_event_id, "planned_event_id")
+            _require_non_empty(self.planned_event_version, "planned_event_version")
+            if self.planned_week is None:
+                raise ValueError("Expected planned development week when planned event is set.")
+        if self.planned_week is not None and not has_planned_event:
+            raise ValueError("Expected planned development event when planned week is set.")
         plan_weeks = tuple(record.week for record in self.history.plan_records)
         execution_weeks = tuple(record.week for record in self.history.week_records)
         if set(plan_weeks) != set(self.processed_planning_weeks):
@@ -515,23 +516,22 @@ class DevelopmentRuntimeState:
         if set(execution_weeks) != set(self.processed_execution_weeks):
             raise ValueError("Expected processed development execution weeks to match execution history.")
         history_decisions = tuple(record.decision_id for record in self.history.week_records)
-        for decision_id in history_decisions:
-            if decision_id not in decision_ids:
-                raise ValueError("Expected processed decision ids to contain development history decisions.")
+        if history_decisions != decision_ids:
+            raise ValueError("Expected processed decision ids to exactly match development history decisions.")
         consumed = tuple(
             key
             for record in self.history.week_records
             for key in record.consumed_work_record_keys
         )
-        for key in consumed:
-            if key not in work_keys:
-                raise ValueError("Expected processed work record keys to contain consumed history keys.")
+        if consumed != work_keys:
+            raise ValueError("Expected processed work record keys to exactly match consumed history keys.")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "history": self.history.to_dict(),
-            "planned_profile_id": self.planned_profile_id,
-            "planned_decision": self.planned_decision.to_dict() if self.planned_decision else None,
+            "planned_event_id": self.planned_event_id,
+            "planned_event_version": self.planned_event_version,
+            "planned_profile_ids": list(self.planned_profile_ids),
             "planned_week": self.planned_week,
             "processed_planning_weeks": list(self.processed_planning_weeks),
             "processed_execution_weeks": list(self.processed_execution_weeks),

@@ -105,7 +105,9 @@ Active work applies modest deterministic weekly effects to ordinary-life state s
 
 M9 keeps practical development separate from M6 psychological memory. The guiding rules are: "Practice creates experience; experience can create skill." and "Enrollment creates an opportunity to progress, not automatic progress."
 
-Development profiles are data-defined weekly study/practice options. A `DevelopmentPlanningTransition` creates one `weekly_development` event per week and calls the normal M4 Decision Engine; there is no separate development decision brain. The chosen profile records planned study hours, practice allocations, and the same transparent M4 score audit as other choices.
+Development profiles are data-defined weekly study/practice options. A `DevelopmentPlanningTransition` creates one `weekly_development` opportunity per week and records the applicable profiles; the normal canonical M4 `DecisionEngineTransition` makes the choice later with the same transparent score audit as other choices. There is no separate development decision brain.
+
+Profiles with formal education hours are applicable only while the agent is enrolled in a resolvable program. Practice-only or zero-education profiles can remain available after graduation, so a completed degree does not secretly continue consuming study hours.
 
 Development execution is deterministic and zero-RNG. It consumes the same-week M4 development decision exactly once, then converts actual study, direct practice, and completed M8 work records into skill experience. Skill growth aggregates sources first, applies smooth diminishing returns, and never decreases skills or exceeds level 100. Missing skills can be created only when valid catalog-defined experience is genuinely gained.
 
