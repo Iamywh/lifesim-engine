@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
@@ -17,6 +20,57 @@ from lifesim.weekly import WeeklyContext, WeeklyPipeline
 DEFAULT_CHECKPOINTS = (12, 26, 52, 156)
 CALIBRATION_SEEDS = tuple(range(200))
 HOLDOUT_SEEDS = tuple(range(1000, 1050))
+ROUTINE_PROFILES = (
+    "balanced_week",
+    "austerity_home_week",
+    "low_cost_active_week",
+    "recovery_focus_week",
+    "social_week",
+)
+HEALTH_MENTAL_FIELDS = (
+    "health.energy",
+    "health.physical_health",
+    "mental.stress",
+    "mental.mental_load",
+    "mental.recovery_need",
+    "mental.mood",
+    "mental.loneliness",
+    "health.sleep_debt",
+)
+BOUNDED_FIELDS = tuple(field for field in HEALTH_MENTAL_FIELDS if field != "health.sleep_debt")
+MONEY_ACCOUNTS = ("cash", "bank_balance", "savings", "emergency_fund")
+PERSONALITY_WEEKLY_CAP = 0.0015 + 1e-12
+PERSONALITY_ANCHOR_CAP = 0.12 + 1e-12
+
+
+class HardInvariantError(RuntimeError):
+    """Raised when a completed simulation step violates calibration invariants."""
+
+
+@dataclass(frozen=True, slots=True)
+class CalibrationRunRecord:
+    seed: int
+    completed: bool
+    failure_week: int | None
+    failure_type: str
+    failure_message: str
+    checkpoints: dict[int, dict[str, Any]]
+    metrics: dict[str, Any]
+    hard_invariant_failures: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "seed": self.seed,
+            "completed": self.completed,
+            "failure_week": self.failure_week,
+            "failure_type": self.failure_type,
+            "failure_message": self.failure_message,
+            "checkpoints": {
+                str(week): _json_value(values) for week, values in self.checkpoints.items()
+            },
+            "metrics": _json_value(self.metrics),
+            "hard_invariant_failures": list(self.hard_invariant_failures),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,8 +79,11 @@ class CalibrationResult:
     seeds: tuple[int, ...]
     duration_weeks: int
     checkpoints: tuple[int, ...]
+    run_records: tuple[CalibrationRunRecord, ...]
     run_count: int
+    successful_run_count: int
     failure_count: int
+    hard_invariant_failure_count: int
     metrics: dict[str, Any]
     warnings: tuple[str, ...]
 
@@ -37,9 +94,12 @@ class CalibrationResult:
             "duration_weeks": self.duration_weeks,
             "checkpoints": list(self.checkpoints),
             "run_count": self.run_count,
+            "successful_run_count": self.successful_run_count,
             "failure_count": self.failure_count,
-            "metrics": self.metrics,
+            "hard_invariant_failure_count": self.hard_invariant_failure_count,
+            "metrics": _json_value(self.metrics),
             "warnings": list(self.warnings),
+            "run_records": [record.to_dict() for record in self.run_records],
         }
 
 
@@ -55,28 +115,132 @@ def run_calibration(
 ) -> CalibrationResult:
     base_config = load_config(config_path)
     valid_checkpoints = tuple(week for week in checkpoints if week <= duration_weeks)
-    summaries: list[dict[str, Any]] = []
-    failures = 0
-    for seed in seeds:
-        config = _with_seed_and_duration(base_config, seed, duration_weeks)
-        agent = load_agent_state(agent_scenario_path)
-        pipeline = WeeklyPipeline(build_canonical_transitions(**catalog_paths))
-        try:
-            summaries.append(_run_summary(config, agent, pipeline, valid_checkpoints))
-        except (RuntimeError, TypeError, ValueError):
-            failures += 1
-    metrics = _aggregate_metrics(summaries, valid_checkpoints)
-    warnings = _warnings(metrics, failures)
+    pipeline = WeeklyPipeline(build_canonical_transitions(**catalog_paths))
+    records = tuple(
+        _run_record(
+            config=_with_seed_and_duration(base_config, seed, duration_weeks),
+            agent=load_agent_state(agent_scenario_path),
+            pipeline=pipeline,
+            checkpoints=valid_checkpoints,
+        )
+        for seed in seeds
+    )
+    metrics = aggregate_run_records(records, valid_checkpoints, duration_weeks)
+    warnings = diagnose_warnings(metrics)
     return CalibrationResult(
         label=label,
         seeds=tuple(seeds),
         duration_weeks=duration_weeks,
         checkpoints=valid_checkpoints,
-        run_count=len(summaries),
-        failure_count=failures,
+        run_records=records,
+        run_count=len(seeds),
+        successful_run_count=sum(1 for record in records if record.completed),
+        failure_count=sum(1 for record in records if not record.completed),
+        hard_invariant_failure_count=sum(
+            1 for record in records if record.hard_invariant_failures
+        ),
         metrics=metrics,
         warnings=warnings,
     )
+
+
+def aggregate_run_records(
+    records: tuple[CalibrationRunRecord, ...],
+    checkpoints: tuple[int, ...],
+    duration_weeks: int,
+) -> dict[str, Any]:
+    successes = tuple(record for record in records if record.completed)
+    failures = tuple(record for record in records if not record.completed)
+    finance = _finance_aggregates(successes, checkpoints)
+    employment = _employment_aggregates(successes, checkpoints)
+    education = _education_aggregates(successes, checkpoints)
+    health = _health_aggregates(successes, duration_weeks)
+    social = _social_aggregates(successes)
+    routine = _routine_aggregates(successes)
+    events = _event_aggregates(successes, duration_weeks)
+    adaptation = _adaptation_aggregates(successes)
+    return {
+        "requested_runs": len(records),
+        "successful_runs": len(successes),
+        "failed_runs": len(failures),
+        "failure_types": dict(sorted(Counter(record.failure_type for record in failures).items())),
+        "failure_weeks": dict(
+            sorted(Counter(record.failure_week for record in failures).items())
+        ),
+        "hard_invariant_failures": sum(
+            len(record.hard_invariant_failures) for record in records
+        ),
+        "finance": finance,
+        "employment": employment,
+        "education": education,
+        "health_mental": health,
+        "social": social,
+        "routine": routine,
+        "events": events,
+        "adaptation": adaptation,
+    }
+
+
+def diagnose_warnings(metrics: Mapping[str, Any]) -> tuple[str, ...]:
+    warnings: list[str] = []
+    if metrics["failed_runs"]:
+        warnings.append("RUN_FAILURES")
+    if metrics["hard_invariant_failures"]:
+        warnings.append("HARD_INVARIANT_FAILURES")
+
+    events = metrics["events"]
+    if events["dominant_event_share"] >= 0.35 or events["dominant_category_share"] >= 0.55:
+        warnings.append("EVENT_DOMINANCE")
+    if events["event_week_rate"] < 0.25:
+        warnings.append("EVENTS_TOO_RARE")
+    if events["event_week_rate"] > 0.70:
+        warnings.append("EVENTS_TOO_FREQUENT")
+
+    if metrics["routine"]["dominant_share"] >= 0.75:
+        warnings.append("ROUTINE_LOCK_IN")
+    if metrics["education"]["dominant_development_profile_share"] >= 0.75:
+        warnings.append("DEVELOPMENT_LOCK_IN")
+
+    employment = metrics["employment"]
+    ever_26 = employment["ever_employed_rate_by_checkpoint"].get("26", 0.0)
+    ever_52 = employment["ever_employed_rate_by_checkpoint"].get("52", 0.0)
+    first_employment = employment["first_employment_week_distribution"]
+    if ever_26 >= 0.95 and first_employment.get("p50", 999.0) <= 6.0:
+        warnings.append("EMPLOYMENT_TOO_EASY")
+    if ever_52 <= 0.35:
+        warnings.append("EMPLOYMENT_TOO_HARD")
+
+    education = metrics["education"]
+    if education["graduation_rate_by_checkpoint"].get("156", 0.0) >= 0.98:
+        warnings.append("UNIVERSAL_GRADUATION")
+    if education["graduation_rate_by_checkpoint"].get("156", 0.0) <= 0.05:
+        warnings.append("NEAR_ZERO_GRADUATION")
+
+    finance = metrics["finance"]
+    if finance["arrear_incidence_rate"] >= 0.95:
+        warnings.append("UNIVERSAL_ARREARS")
+    if finance["charge_count_distribution"].get("p50", 0.0) < 1.0:
+        warnings.append("NO_FINANCIAL_PRESSURE")
+    if finance["final_liquid_distribution"].get("p95", 0.0) > 12000.0:
+        warnings.append("RESOURCE_EXPLOSION")
+
+    if metrics["health_mental"]["boundary_saturation_rate"] > 0.10:
+        warnings.append("STATE_BOUNDARY_SATURATION")
+    if metrics["social"]["dominant_social_choice_share"] >= 0.85:
+        warnings.append("SOCIAL_LOCK_IN")
+    if (
+        metrics["adaptation"]["final_habit_strength_distribution"].get("p95", 0.0) >= 95.0
+        or metrics["adaptation"]["max_habit_familiarity_distribution"].get("p95", 0.0) > 0.5
+    ):
+        warnings.append("HABIT_LOCK_IN")
+    if (
+        metrics["adaptation"]["max_weekly_personality_delta_distribution"].get("p95", 0.0)
+        > 0.0015
+        or metrics["adaptation"]["max_anchor_displacement_distribution"].get("p95", 0.0)
+        > 0.12
+    ):
+        warnings.append("PERSONALITY_DRIFT_HIGH")
+    return tuple(warnings)
 
 
 def write_markdown_report(
@@ -88,42 +252,1033 @@ def write_markdown_report(
     lines = [
         "# M12 Calibration Report",
         "",
-        "M12 adds explicit financial charges, canonical engine construction, and a deterministic calibration harness.",
+        "## Goals",
         "",
-        _section(calibration),
+        "M12 validates the canonical Maya v1 simulator after adding exact financial charges, richer world events, canonical engine construction, and deterministic calibration diagnostics.",
+        "",
+        "## Baseline M11 Failure",
+        "",
+        "The post-M11 architecture could fail when M4 affordability reasoned over total liquid resources while an M5 direct monetary effect targeted only one account. Perceived and actual costs could also disagree. The reproducible targeted baseline is `financial.bank_balance` underflow from a direct monetary delta even when other liquid accounts exist.",
+        "",
+        "A full old-code cohort was not run from this branch; keeping that isolated historical run would require checking out pre-M12 code and catalogs outside the runtime package. The targeted regression is retained in `tests/test_consequences.py::test_monetary_underflow_fails_without_partial_mutation`.",
+        "",
+        "## Structural Financial Fix",
+        "",
+        "M12 keeps strict direct monetary effects for legacy/state-delta semantics, but ordinary event costs now use explicit `FinancialChargeDefinition` records. Charges settle exact `Decimal` amounts across a declared funding order, audit every transfer, and use either `require_full` or `arrear` shortfall policy. Scheduled financial charges preserve decision/event/outcome provenance and execute exactly once.",
+        "",
+        "## Event Additions",
+        "",
+        "The starter world expands from 5 to 12 events with modest city, finance, social, health, housing, technology, bureaucracy, education, and refund opportunities. The global world event probability remains 0.45 and max events per week remains 1.",
+        "",
+        "## Parameter Change Log",
+        "",
+        "- `pay_for_faster_transport` estimated cost: 14.00 -> 16.00, aligned with actual charge.",
+        "- `handle_immediately` estimated cost: 22.00 -> 24.00, aligned with actual charge.",
+        "- `accept_invitation` estimated cost: 18.00 -> 20.00, aligned with actual charge.",
+        "- Direct event-cost bank deltas for transport, small expenses, and social invitations were replaced by explicit financial charges.",
+        "- Added behavior tags to starter event options for M11 evidence.",
+        "- Added 7 starter events: phone/device problem, household maintenance issue, free local activity, bureaucratic errand, minor health setback, university admin deadline, and small refund opportunity.",
+        "- No M8 employment, M7 routine, M9 development, M10 social, M11 adaptation rates, or global M3 event probability were tuned in this hardening pass.",
+        "",
+        _result_section("200-Seed Calibration Summary", calibration),
     ]
     if holdout is not None:
-        lines.extend(["", _section(holdout)])
+        lines.extend(["", _result_section("50-Seed Holdout Comparison", holdout)])
+    lines.extend(["", _warnings_section(calibration, holdout)])
+    lines.extend(
+        [
+            "",
+            "## Canonical Seed-42 Validation",
+            "",
+            "Canonical input paths are frozen below. Validation requires 12/26/52-week runs to match the corresponding prefixes of the 156-week run, and two 156-week runs with seed 42 to produce identical complete JSON.",
+            "",
+            "## Known Limitations",
+            "",
+            "- Indefinite starter jobs can make current week-156 employment sticky after acquisition. Employment warnings therefore use acquisition funnel timing/rates rather than current employment alone.",
+            "- Calibration diagnostics are broad warnings, not automatic tuning instructions.",
+            "- No layoffs, career ladders, relationship life-cycle arcs, or long-term macroeconomic systems are implemented in M12.",
+            "",
+            "## Frozen Canonical Input Paths",
+            "",
+            "- `configs/canonical/maya_v1.toml`",
+            "- `configs/scenarios/maya_start.toml`",
+            "- `configs/events/starter.toml`",
+            "- `configs/consequences/starter.toml`",
+            "- `configs/routines/starter.toml`",
+            "- `configs/employment/starter.toml`",
+            "- `configs/development/starter.toml`",
+            "- `configs/social/starter.toml`",
+            "- `configs/adaptation/starter.toml`",
+        ]
+    )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _section(result: CalibrationResult) -> str:
+def _result_section(title: str, result: CalibrationResult) -> str:
     metrics = result.metrics
+    finance = metrics["finance"]
+    employment = metrics["employment"]
+    education = metrics["education"]
+    health = metrics["health_mental"]
+    social = metrics["social"]
+    routine = metrics["routine"]
+    events = metrics["events"]
+    adaptation = metrics["adaptation"]
     warnings = ", ".join(result.warnings) if result.warnings else "none"
-    checkpoint_lines = [
-        (
-            f"- week {week}: avg liquid {values['avg_liquid']:.2f}, "
-            f"avg arrears {values['avg_arrears']:.2f}, employed {values['employment_rate']:.2f}, "
-            f"avg education progress {values['avg_education_progress']:.2f}, "
-            f"avg connections {values['avg_connections']:.2f}"
-        )
-        for week, values in metrics["checkpoints"].items()
-    ]
     return "\n".join(
         [
-            f"## {result.label}",
+            f"## {title}",
             "",
-            f"- runs: {result.run_count}",
+            f"- requested runs: {result.run_count}",
+            f"- successful runs: {result.successful_run_count}",
             f"- failures: {result.failure_count}",
+            f"- hard invariant failures: {result.hard_invariant_failure_count}",
             f"- warnings: {warnings}",
-            f"- avg events per run: {metrics['avg_events_per_run']:.2f}",
-            f"- avg financial charges per run: {metrics['avg_financial_charges_per_run']:.2f}",
-            f"- avg unpaid charge amount per run: {metrics['avg_unpaid_charge_amount_per_run']:.2f}",
             "",
-            "### Checkpoints",
-            *checkpoint_lines,
+            "### Finance Distributions",
+            _stats_line("final liquid", finance["final_liquid_distribution"]),
+            _stats_line("maximum arrears", finance["max_arrear_distribution"]),
+            _stats_line("final arrears", finance["final_arrear_distribution"]),
+            _stats_line("final debt", finance["final_debt_distribution"]),
+            f"- arrear incidence rate: {finance['arrear_incidence_rate']:.2f}",
+            f"- arrear recovery rate: {finance['arrear_recovery_rate']:.2f}",
+            f"- liquid p05/p50/p95 by checkpoint: {_checkpoint_triplets(finance['liquid_by_checkpoint'])}",
+            "",
+            "### Employment Funnel",
+            f"- ever employed by checkpoint: {employment['ever_employed_rate_by_checkpoint']}",
+            f"- current employed by checkpoint: {employment['current_employed_rate_by_checkpoint']}",
+            _stats_line("first employment week", employment["first_employment_week_distribution"]),
+            f"- application -> interview rate: {employment['application_to_interview_rate']:.2f}",
+            f"- interview -> offer rate: {employment['interview_to_offer_rate']:.2f}",
+            f"- offer -> acceptance rate: {employment['offer_acceptance_rate']:.2f}",
+            "",
+            "### Education / Development",
+            f"- graduation rate by checkpoint: {education['graduation_rate_by_checkpoint']}",
+            _stats_line("graduation week", education["graduation_week_distribution"]),
+            f"- development profile shares: {education['development_profile_shares']}",
+            "",
+            "### Health / Mental Saturation",
+            f"- boundary saturation rate: {health['boundary_saturation_rate']:.4f}",
+            f"- saturated fields: {health['saturated_fields']}",
+            "",
+            "### Social",
+            f"- new connection incidence rate: {social['new_connection_incidence_rate']:.2f}",
+            _stats_line("final connections", social["final_connection_distribution"]),
+            f"- social outcome counts: {social['outcome_counts']}",
+            "",
+            "### Routine",
+            f"- profile shares: {routine['profile_shares']}",
+            f"- dominant profile/share: {routine['dominant_profile']} / {routine['dominant_share']:.2f}",
+            "",
+            "### Events",
+            f"- event-week rate: {events['event_week_rate']:.2f}",
+            f"- dominant event/share: {events['dominant_event_id']} / {events['dominant_event_share']:.2f}",
+            f"- dominant category/share: {events['dominant_category']} / {events['dominant_category_share']:.2f}",
+            "",
+            "### Adaptation",
+            _stats_line("habits formed", adaptation["habits_formed_distribution"]),
+            _stats_line("max habit familiarity", adaptation["max_habit_familiarity_distribution"]),
+            _stats_line("max weekly personality delta", adaptation["max_weekly_personality_delta_distribution"]),
+            _stats_line("max anchor displacement", adaptation["max_anchor_displacement_distribution"]),
         ]
     )
+
+
+def _warnings_section(
+    calibration: CalibrationResult,
+    holdout: CalibrationResult | None,
+) -> str:
+    calibration_warnings = ", ".join(calibration.warnings) if calibration.warnings else "none"
+    lines = [
+        "## Remaining Warnings",
+        "",
+        f"- calibration: {calibration_warnings}",
+    ]
+    if holdout is not None:
+        holdout_warnings = ", ".join(holdout.warnings) if holdout.warnings else "none"
+        lines.append(f"- holdout: {holdout_warnings}")
+    lines.extend(
+        [
+            "- warnings are diagnostics only; no M8 employment, M7 routine, M9 development, M10 social, or M11 adaptation tuning was performed in M12.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _run_record(
+    *,
+    config: LifeSimConfig,
+    agent: AgentState,
+    pipeline: WeeklyPipeline,
+    checkpoints: tuple[int, ...],
+) -> CalibrationRunRecord:
+    seed = config.simulation.seed
+    tracker = _Tracker(agent, checkpoints)
+    last_completed_week = 0
+    event_history: Any = EventHistory()
+    decision_history = None
+    consequence_runtime = None
+    learning_runtime = None
+    passive_runtime = None
+    employment_runtime = None
+    development_runtime = None
+    social_runtime = None
+    adaptation_runtime = None
+    rng = create_rng(seed)
+    try:
+        for week in range(1, config.simulation.duration_weeks + 1):
+            context = WeeklyContext(
+                week=week,
+                config=config,
+                rng=rng,
+                event_history=event_history,
+                decision_history=decision_history,
+                consequence_runtime=consequence_runtime,
+                learning_runtime=learning_runtime,
+                passive_runtime=passive_runtime,
+                employment_runtime=employment_runtime,
+                development_runtime=development_runtime,
+                social_runtime=social_runtime,
+                adaptation_runtime=adaptation_runtime,
+            )
+            result = pipeline.advance(agent, context)
+            agent = result.agent_state
+            event_history = result.event_history if result.event_history is not None else event_history
+            decision_history = (
+                result.decision_history if result.decision_history is not None else decision_history
+            )
+            consequence_runtime = (
+                result.consequence_runtime
+                if result.consequence_runtime is not None
+                else consequence_runtime
+            )
+            learning_runtime = (
+                result.learning_runtime if result.learning_runtime is not None else learning_runtime
+            )
+            passive_runtime = (
+                result.passive_runtime if result.passive_runtime is not None else passive_runtime
+            )
+            employment_runtime = (
+                result.employment_runtime
+                if result.employment_runtime is not None
+                else employment_runtime
+            )
+            development_runtime = (
+                result.development_runtime
+                if result.development_runtime is not None
+                else development_runtime
+            )
+            social_runtime = (
+                result.social_runtime if result.social_runtime is not None else social_runtime
+            )
+            adaptation_runtime = (
+                result.adaptation_runtime
+                if result.adaptation_runtime is not None
+                else adaptation_runtime
+            )
+            tracker.observe_week(
+                week=week,
+                agent=agent,
+                result=result,
+                consequence_runtime=consequence_runtime,
+                adaptation_runtime=adaptation_runtime,
+            )
+            last_completed_week = week
+    except (RuntimeError, TypeError, ValueError) as error:
+        return CalibrationRunRecord(
+            seed=seed,
+            completed=False,
+            failure_week=last_completed_week + 1,
+            failure_type=type(error).__name__,
+            failure_message=str(error),
+            checkpoints=tracker.checkpoints,
+            metrics=tracker.final_metrics(agent),
+            hard_invariant_failures=(
+                (str(error),) if isinstance(error, HardInvariantError) else ()
+            ),
+        )
+
+    try:
+        tracker.validate_final(
+            config.simulation.duration_weeks,
+            consequence_runtime,
+        )
+    except HardInvariantError as error:
+        return CalibrationRunRecord(
+            seed=seed,
+            completed=False,
+            failure_week=config.simulation.duration_weeks,
+            failure_type=type(error).__name__,
+            failure_message=str(error),
+            checkpoints=tracker.checkpoints,
+            metrics=tracker.final_metrics(agent),
+            hard_invariant_failures=(str(error),),
+        )
+
+    return CalibrationRunRecord(
+        seed=seed,
+        completed=True,
+        failure_week=None,
+        failure_type="",
+        failure_message="",
+        checkpoints=tracker.checkpoints,
+        metrics=tracker.final_metrics(agent),
+        hard_invariant_failures=(),
+    )
+
+
+class _Tracker:
+    def __init__(self, agent: AgentState, checkpoints: tuple[int, ...]) -> None:
+        self._checkpoints = set(checkpoints)
+        self.checkpoints: dict[int, dict[str, Any]] = {}
+        self.initial_liquid = _liquid(agent)
+        self.initial_debt = _debt_balance(agent)
+        self.minimum_liquid = self.initial_liquid
+        self.maximum_arrears = Decimal("0.00")
+        self.weeks_with_arrears = 0
+        self.first_arrear_week: int | None = None
+        self._ever_arrear_ids: set[str] = set()
+        self._final_arrear_ids: set[str] = set()
+        self.arrears_created = 0
+        self.charge_count = 0
+        self.charge_due = Decimal("0.00")
+        self.charge_paid = Decimal("0.00")
+        self.charge_unpaid = Decimal("0.00")
+        self.recurring_income_received = Decimal("0.00")
+        self.employment_wage_income = Decimal("0.00")
+        self.routine_spending = Decimal("0.00")
+        self.first_job_discovery_week: int | None = None
+        self.first_application_week: int | None = None
+        self.first_interview_week: int | None = None
+        self.first_offer_week: int | None = None
+        self.first_employment_start_week: int | None = None
+        self.total_employed_weeks = 0
+        self.jobs_held: set[str] = set()
+        self.contract_endings = 0
+        self.application_count = 0
+        self.interview_count = 0
+        self.offer_count = 0
+        self.accepted_offers = 0
+        self.development_profiles: Counter[str] = Counter()
+        self.effective_study_hours = 0.0
+        self.effective_practice_hours = 0.0
+        self.skill_level_deltas: dict[str, float] = {}
+        self.new_skills_created = 0
+        self.graduation_week: int | None = None
+        self.health_mental = {
+            field: {
+                "min": _path_value(agent, field),
+                "max": _path_value(agent, field),
+                "weeks_at_0": 0,
+                "weeks_at_100": 0,
+            }
+            for field in HEALTH_MENTAL_FIELDS
+        }
+        self.starting_connections = len(agent.social.connections)
+        self.final_connections = self.starting_connections
+        self.social_focal_opportunity_count = 0
+        self.social_choices: Counter[str] = Counter()
+        self.social_outcomes: Counter[str] = Counter()
+        self.support_network_strength_checkpoints: dict[int, float] = {}
+        self.routine_profiles: Counter[str] = Counter()
+        self.event_weeks = 0
+        self.event_free_weeks = 0
+        self.event_counts: Counter[str] = Counter()
+        self.event_category_counts: Counter[str] = Counter()
+        self.option_counts: Counter[str] = Counter()
+        self.outcome_counts: Counter[str] = Counter()
+        self.habits_formed = 0
+        self.final_habit_strengths: list[float] = []
+        self.max_habit_familiarity = 0.0
+        self.max_weekly_personality_delta = 0.0
+        self.max_anchor_displacement = 0.0
+        self._provenance_ids: set[str] = set()
+        if 0 in self._checkpoints:
+            self.checkpoints[0] = _checkpoint(agent)
+
+    def observe_week(
+        self,
+        *,
+        week: int,
+        agent: AgentState,
+        result: Any,
+        consequence_runtime: Any,
+        adaptation_runtime: Any,
+    ) -> None:
+        self.minimum_liquid = min(self.minimum_liquid, _liquid(agent))
+        total_arrears = _arrear_balance(agent)
+        if total_arrears > Decimal("0.00"):
+            self.weeks_with_arrears += 1
+            self.first_arrear_week = self.first_arrear_week or week
+        self.maximum_arrears = max(self.maximum_arrears, total_arrears)
+        current_arrear_ids = {arrear.obligation_id for arrear in agent.financial.arrears}
+        new_arrears = current_arrear_ids - self._ever_arrear_ids
+        self.arrears_created += len(new_arrears)
+        self._ever_arrear_ids.update(new_arrears)
+        self._final_arrear_ids = current_arrear_ids
+        if _is_currently_employed(agent):
+            self.total_employed_weeks += 1
+            if self.first_employment_start_week is None:
+                self.first_employment_start_week = agent.employment.start_week or week
+            if agent.employment.contract_id:
+                self.jobs_held.add(agent.employment.contract_id)
+        self.final_connections = len(agent.social.connections)
+        self._observe_events(result.events)
+        self._observe_decisions(result.decisions)
+        self._observe_consequences(result.consequences)
+        self._observe_passive(result.passive_records)
+        self._observe_employment(result.employment_records)
+        self._observe_development(result.development_records)
+        self._observe_social(result.social_records)
+        self._observe_adaptation(result.adaptation_records, adaptation_runtime)
+        self._observe_health_mental(agent)
+        if week in self._checkpoints:
+            self.checkpoints[week] = _checkpoint(agent)
+            self.support_network_strength_checkpoints[week] = (
+                agent.social.support_network_strength
+            )
+        _assert_hard_invariants(
+            week=week,
+            agent=agent,
+            consequence_records=result.consequences,
+            consequence_runtime=consequence_runtime,
+            adaptation_records=result.adaptation_records,
+            provenance_ids=self._provenance_ids,
+        )
+
+    def validate_final(self, duration_weeks: int, consequence_runtime: Any) -> None:
+        if consequence_runtime is None:
+            return
+        for scheduled in consequence_runtime.pending_scheduled_effects:
+            if scheduled.due_week <= duration_weeks:
+                raise HardInvariantError("Past-due scheduled effect remains pending.")
+        for scheduled in consequence_runtime.pending_scheduled_financial_charges:
+            if scheduled.due_week <= duration_weeks:
+                raise HardInvariantError("Past-due scheduled financial charge remains pending.")
+
+    def final_metrics(self, agent: AgentState) -> dict[str, Any]:
+        self.final_habit_strengths = [habit.strength for habit in agent.habits.items]
+        final_debt = _debt_balance(agent)
+        final_arrears = _arrear_balance(agent)
+        final_skill_levels = {skill.name: skill.level for skill in agent.skills.items}
+        return {
+            "initial_liquid": self.initial_liquid,
+            "minimum_liquid": self.minimum_liquid,
+            "final_liquid": _liquid(agent),
+            "initial_debt_balance": self.initial_debt,
+            "final_debt_balance": final_debt,
+            "any_arrear": bool(self._ever_arrear_ids),
+            "first_arrear_week": self.first_arrear_week,
+            "maximum_total_arrear_balance": self.maximum_arrears,
+            "final_total_arrear_balance": final_arrears,
+            "weeks_with_arrears": self.weeks_with_arrears,
+            "arrears_created": self.arrears_created,
+            "arrears_fully_recovered": len(self._ever_arrear_ids - self._final_arrear_ids),
+            "charge_count": self.charge_count,
+            "charge_amount_due": self.charge_due,
+            "charge_amount_paid": self.charge_paid,
+            "charge_amount_unpaid": self.charge_unpaid,
+            "recurring_income_received": self.recurring_income_received,
+            "employment_wage_income": self.employment_wage_income,
+            "routine_spending": self.routine_spending,
+            "first_job_discovery_week": self.first_job_discovery_week,
+            "first_application_week": self.first_application_week,
+            "first_interview_week": self.first_interview_week,
+            "first_offer_week": self.first_offer_week,
+            "first_employment_start_week": self.first_employment_start_week,
+            "ever_employed": self.first_employment_start_week is not None
+            or self.total_employed_weeks > 0,
+            "currently_employed_final": _is_currently_employed(agent),
+            "total_employed_weeks": self.total_employed_weeks,
+            "jobs_held": len(self.jobs_held),
+            "contract_endings": self.contract_endings,
+            "application_count": self.application_count,
+            "interview_count": self.interview_count,
+            "offer_count": self.offer_count,
+            "accepted_offers": self.accepted_offers,
+            "graduated": agent.education.status == "graduated",
+            "graduation_week": self.graduation_week,
+            "development_profile_counts": dict(self.development_profiles),
+            "effective_study_hours": self.effective_study_hours,
+            "effective_practice_hours": self.effective_practice_hours,
+            "skill_level_deltas": dict(self.skill_level_deltas),
+            "new_skills_created": self.new_skills_created,
+            "final_skill_levels": final_skill_levels,
+            "health_mental": self.health_mental,
+            "starting_connection_count": self.starting_connections,
+            "final_connection_count": self.final_connections,
+            "new_persistent_connections": max(0, self.final_connections - self.starting_connections),
+            "social_focal_opportunity_count": self.social_focal_opportunity_count,
+            "social_choice_counts": dict(self.social_choices),
+            "social_outcome_counts": dict(self.social_outcomes),
+            "support_network_strength_checkpoints": dict(self.support_network_strength_checkpoints),
+            "final_support_network_strength": agent.social.support_network_strength,
+            "routine_profile_counts": dict(self.routine_profiles),
+            "event_weeks": self.event_weeks,
+            "event_free_weeks": self.event_free_weeks,
+            "event_id_counts": dict(self.event_counts),
+            "event_category_counts": dict(self.event_category_counts),
+            "chosen_option_counts": dict(self.option_counts),
+            "outcome_counts": dict(self.outcome_counts),
+            "habits_formed": self.habits_formed,
+            "final_managed_habit_strengths": self.final_habit_strengths,
+            "max_habit_familiarity": self.max_habit_familiarity,
+            "max_weekly_personality_delta": self.max_weekly_personality_delta,
+            "max_anchor_displacement": self.max_anchor_displacement,
+        }
+
+    def _observe_events(self, events: tuple[Any, ...]) -> None:
+        world_events = [event for event in events if not _synthetic_event_id(event.event_id)]
+        if world_events:
+            self.event_weeks += 1
+        else:
+            self.event_free_weeks += 1
+        for event in world_events:
+            self.event_counts[event.event_id] += 1
+            self.event_category_counts[event.category] += 1
+
+    def _observe_decisions(self, decisions: tuple[Any, ...]) -> None:
+        for decision in decisions:
+            if decision.chosen_option_id:
+                self.option_counts[f"{decision.source_event_id}:{decision.chosen_option_id}"] += 1
+            for evaluation in decision.evaluations:
+                if not evaluation.available:
+                    continue
+                for component in evaluation.components:
+                    if component.name == "habit_familiarity":
+                        self.max_habit_familiarity = max(
+                            self.max_habit_familiarity,
+                            abs(component.contribution),
+                        )
+
+    def _observe_consequences(self, records: tuple[Any, ...]) -> None:
+        for record in records:
+            if record.selected_outcome_id:
+                self.outcome_counts[
+                    f"{record.source_event_id}:{record.selected_outcome_id}"
+                ] += 1
+            for application in record.financial_charge_applications:
+                if application.skipped:
+                    continue
+                self.charge_count += 1
+                self.charge_due += application.amount_due
+                self.charge_paid += application.amount_paid
+                self.charge_unpaid += application.amount_unpaid
+
+    def _observe_passive(self, records: tuple[Any, ...]) -> None:
+        for record in records:
+            entries = getattr(record, "entries", ())
+            for entry in entries:
+                if entry.kind == "income":
+                    self.recurring_income_received += entry.amount_paid
+                    if entry.name.lower().startswith("wages:"):
+                        self.employment_wage_income += entry.amount_paid
+                if entry.kind.startswith("routine_"):
+                    self.routine_spending += entry.amount_paid
+            spending = getattr(record, "spending", ())
+            for entry in spending:
+                self.routine_spending += entry.amount_paid
+            profile_id = getattr(record, "profile_id", "")
+            if profile_id:
+                self.routine_profiles[profile_id] += 1
+
+    def _observe_employment(self, records: tuple[Any, ...]) -> None:
+        for record in records:
+            if (
+                hasattr(record, "discovered_job_keys")
+                and record.discovered_job_keys
+                and self.first_job_discovery_week is None
+            ):
+                self.first_job_discovery_week = record.week
+            stage = getattr(record, "stage", "")
+            if stage == "APPLICATION_DECISION":
+                self.application_count += 1
+                self.first_application_week = self.first_application_week or record.week
+            elif stage == "APPLICATION_RESPONSE":
+                if record.status_after == "INTERVIEW_INVITED":
+                    self.interview_count += 1
+                    self.first_interview_week = self.first_interview_week or record.week
+            elif stage == "INTERVIEW_RESPONSE":
+                if record.status_after == "OFFER_AVAILABLE":
+                    self.offer_count += 1
+                    self.first_offer_week = self.first_offer_week or record.week
+            elif stage == "OFFER_DECISION" and record.status_after == "ACCEPTED":
+                self.accepted_offers += 1
+            action = getattr(record, "action", "")
+            if action == "contract_started":
+                self.jobs_held.add(record.contract_id)
+                self.first_employment_start_week = self.first_employment_start_week or record.week
+            elif action == "contract_ended":
+                self.contract_endings += 1
+
+    def _observe_development(self, records: tuple[Any, ...]) -> None:
+        for record in records:
+            profile_id = getattr(record, "profile_id", "")
+            if not profile_id:
+                continue
+            self.development_profiles[profile_id] += 1
+            self.effective_study_hours += record.efficiency.effective_study_hours
+            self.effective_practice_hours += record.efficiency.effective_practice_hours
+            if record.education_progress is not None and record.education_progress.completed:
+                self.graduation_week = self.graduation_week or record.week
+            for skill in record.skill_developments:
+                self.skill_level_deltas[skill.skill_name] = (
+                    self.skill_level_deltas.get(skill.skill_name, 0.0) + skill.level_delta
+                )
+                if skill.level_before == 0.0:
+                    self.new_skills_created += 1
+
+    def _observe_social(self, records: tuple[Any, ...]) -> None:
+        for record in records:
+            option_ids = getattr(record, "option_ids", ())
+            if option_ids:
+                self.social_focal_opportunity_count += 1
+            interaction_type = getattr(record, "interaction_type", "")
+            if interaction_type:
+                self.social_choices[interaction_type] += 1
+            option_id = getattr(record, "option_id", "")
+            if option_id.startswith("connect:"):
+                self.social_choices["connect"] += 1
+            elif option_id.startswith("seek_support:"):
+                self.social_choices["seek_support"] += 1
+            elif option_id.startswith("meet_new:"):
+                self.social_choices["new_encounter"] += 1
+            elif option_id == "keep_social_light":
+                self.social_choices["keep_social_light"] += 1
+            outcome = getattr(record, "outcome", None)
+            if outcome is not None:
+                self.social_outcomes[outcome.selected_outcome_id] += 1
+
+    def _observe_adaptation(self, records: tuple[Any, ...], runtime: Any) -> None:
+        for record in records:
+            for change in record.habit_strength_changes:
+                if change.before == 0.0 and change.after > 0.0:
+                    self.habits_formed += 1
+            for change in record.personality_changes:
+                self.max_weekly_personality_delta = max(
+                    self.max_weekly_personality_delta,
+                    abs(change.delta),
+                )
+                self.max_anchor_displacement = max(
+                    self.max_anchor_displacement,
+                    abs(change.after - change.anchor),
+                )
+        if runtime is not None and runtime.personality_anchor is not None:
+            for accumulator in runtime.trait_accumulators:
+                self.max_anchor_displacement = max(self.max_anchor_displacement, 0.0)
+
+    def _observe_health_mental(self, agent: AgentState) -> None:
+        for field, metrics in self.health_mental.items():
+            value = _path_value(agent, field)
+            metrics["min"] = min(metrics["min"], value)
+            metrics["max"] = max(metrics["max"], value)
+            if field in BOUNDED_FIELDS and value == 0.0:
+                metrics["weeks_at_0"] += 1
+            if field in BOUNDED_FIELDS and value == 100.0:
+                metrics["weeks_at_100"] += 1
+
+
+def _finance_aggregates(
+    records: tuple[CalibrationRunRecord, ...],
+    checkpoints: tuple[int, ...],
+) -> dict[str, Any]:
+    metrics = [record.metrics for record in records]
+    arrears_created = sum(item["arrears_created"] for item in metrics)
+    arrears_recovered = sum(item["arrears_fully_recovered"] for item in metrics)
+    return {
+        "initial_liquid_distribution": stats([item["initial_liquid"] for item in metrics]),
+        "minimum_liquid_distribution": stats([item["minimum_liquid"] for item in metrics]),
+        "final_liquid_distribution": stats([item["final_liquid"] for item in metrics]),
+        "liquid_by_checkpoint": {
+            str(week): stats([
+                record.checkpoints[week]["liquid"]
+                for record in records
+                if week in record.checkpoints
+            ])
+            for week in checkpoints
+        },
+        "account_by_checkpoint": {
+            str(week): {
+                account: stats([
+                    record.checkpoints[week][account]
+                    for record in records
+                    if week in record.checkpoints
+                ])
+                for account in MONEY_ACCOUNTS
+            }
+            for week in checkpoints
+        },
+        "final_debt_distribution": stats([item["final_debt_balance"] for item in metrics]),
+        "initial_debt_distribution": stats([item["initial_debt_balance"] for item in metrics]),
+        "arrear_incidence_rate": _rate(item["any_arrear"] for item in metrics),
+        "arrear_recovery_rate": (
+            arrears_recovered / arrears_created if arrears_created else 0.0
+        ),
+        "first_arrear_week_distribution": stats_optional([
+            item["first_arrear_week"] for item in metrics
+        ]),
+        "max_arrear_distribution": stats([
+            item["maximum_total_arrear_balance"] for item in metrics
+        ]),
+        "final_arrear_distribution": stats([
+            item["final_total_arrear_balance"] for item in metrics
+        ]),
+        "weeks_with_arrears_distribution": stats([
+            item["weeks_with_arrears"] for item in metrics
+        ]),
+        "arrears_created_distribution": stats([item["arrears_created"] for item in metrics]),
+        "arrears_recovered_distribution": stats([
+            item["arrears_fully_recovered"] for item in metrics
+        ]),
+        "charge_count_distribution": stats([item["charge_count"] for item in metrics]),
+        "charge_due_distribution": stats([item["charge_amount_due"] for item in metrics]),
+        "charge_paid_distribution": stats([item["charge_amount_paid"] for item in metrics]),
+        "charge_unpaid_distribution": stats([item["charge_amount_unpaid"] for item in metrics]),
+        "recurring_income_distribution": stats([
+            item["recurring_income_received"] for item in metrics
+        ]),
+        "employment_wage_income_distribution": stats([
+            item["employment_wage_income"] for item in metrics
+        ]),
+        "routine_spending_distribution": stats([item["routine_spending"] for item in metrics]),
+    }
+
+
+def _employment_aggregates(
+    records: tuple[CalibrationRunRecord, ...],
+    checkpoints: tuple[int, ...],
+) -> dict[str, Any]:
+    metrics = [record.metrics for record in records]
+    applications = sum(item["application_count"] for item in metrics)
+    interviews = sum(item["interview_count"] for item in metrics)
+    offers = sum(item["offer_count"] for item in metrics)
+    accepted = sum(item["accepted_offers"] for item in metrics)
+    return {
+        "ever_employed_rate_by_checkpoint": {
+            str(week): _rate(
+                item["first_employment_start_week"] is not None
+                and item["first_employment_start_week"] <= week
+                for item in metrics
+            )
+            for week in checkpoints
+        },
+        "current_employed_rate_by_checkpoint": {
+            str(week): _rate(
+                record.checkpoints.get(week, {}).get("currently_employed", False)
+                for record in records
+            )
+            for week in checkpoints
+        },
+        "first_job_discovery_week_distribution": stats_optional([
+            item["first_job_discovery_week"] for item in metrics
+        ]),
+        "first_application_week_distribution": stats_optional([
+            item["first_application_week"] for item in metrics
+        ]),
+        "first_interview_week_distribution": stats_optional([
+            item["first_interview_week"] for item in metrics
+        ]),
+        "first_offer_week_distribution": stats_optional([
+            item["first_offer_week"] for item in metrics
+        ]),
+        "first_employment_week_distribution": stats_optional([
+            item["first_employment_start_week"] for item in metrics
+        ]),
+        "total_employed_weeks_distribution": stats([
+            item["total_employed_weeks"] for item in metrics
+        ]),
+        "jobs_held_distribution": stats([item["jobs_held"] for item in metrics]),
+        "contract_endings_distribution": stats([item["contract_endings"] for item in metrics]),
+        "application_count": applications,
+        "interview_count": interviews,
+        "offer_count": offers,
+        "accepted_offer_count": accepted,
+        "application_to_interview_rate": interviews / applications if applications else 0.0,
+        "interview_to_offer_rate": offers / interviews if interviews else 0.0,
+        "offer_acceptance_rate": accepted / offers if offers else 0.0,
+    }
+
+
+def _education_aggregates(
+    records: tuple[CalibrationRunRecord, ...],
+    checkpoints: tuple[int, ...],
+) -> dict[str, Any]:
+    metrics = [record.metrics for record in records]
+    development_counts = _sum_counters(item["development_profile_counts"] for item in metrics)
+    total_development = sum(development_counts.values())
+    return {
+        "progress_by_checkpoint": {
+            str(week): stats([
+                record.checkpoints[week]["education_progress"]
+                for record in records
+                if week in record.checkpoints
+            ])
+            for week in checkpoints
+        },
+        "graduation_rate_by_checkpoint": {
+            str(week): _rate(
+                item["graduation_week"] is not None and item["graduation_week"] <= week
+                for item in metrics
+            )
+            for week in checkpoints
+        },
+        "graduation_week_distribution": stats_optional([
+            item["graduation_week"] for item in metrics
+        ]),
+        "development_profile_counts": dict(sorted(development_counts.items())),
+        "development_profile_shares": _shares(development_counts),
+        "dominant_development_profile_share": (
+            max(development_counts.values()) / total_development if total_development else 0.0
+        ),
+        "effective_study_hours_distribution": stats([
+            item["effective_study_hours"] for item in metrics
+        ]),
+        "effective_practice_hours_distribution": stats([
+            item["effective_practice_hours"] for item in metrics
+        ]),
+        "new_skills_created_distribution": stats([
+            item["new_skills_created"] for item in metrics
+        ]),
+    }
+
+
+def _health_aggregates(
+    records: tuple[CalibrationRunRecord, ...],
+    duration_weeks: int,
+) -> dict[str, Any]:
+    field_metrics: dict[str, Any] = {}
+    total_boundary_weeks = 0
+    total_bounded_observations = max(1, len(records) * len(BOUNDED_FIELDS))
+    saturated_fields: list[str] = []
+    for field in HEALTH_MENTAL_FIELDS:
+        values = [record.metrics["health_mental"][field] for record in records]
+        weeks_at_boundary = [
+            item["weeks_at_0"] + item["weeks_at_100"]
+            for item in values
+        ]
+        field_metrics[field] = {
+            "minimum_distribution": stats([item["min"] for item in values]),
+            "maximum_distribution": stats([item["max"] for item in values]),
+            "boundary_weeks_distribution": stats(weeks_at_boundary),
+        }
+        if field in BOUNDED_FIELDS:
+            total_boundary_weeks += sum(weeks_at_boundary)
+            if stats(weeks_at_boundary).get("p95", 0.0) >= 8.0:
+                saturated_fields.append(field)
+    return {
+        "fields": field_metrics,
+        "boundary_saturation_rate": total_boundary_weeks
+        / total_bounded_observations
+        / max(1, duration_weeks),
+        "saturated_fields": saturated_fields,
+    }
+
+
+def _social_aggregates(records: tuple[CalibrationRunRecord, ...]) -> dict[str, Any]:
+    metrics = [record.metrics for record in records]
+    social_choices = _sum_counters(item["social_choice_counts"] for item in metrics)
+    total_choices = sum(social_choices.values())
+    return {
+        "starting_connection_distribution": stats([
+            item["starting_connection_count"] for item in metrics
+        ]),
+        "final_connection_distribution": stats([
+            item["final_connection_count"] for item in metrics
+        ]),
+        "new_connection_incidence_rate": _rate(
+            item["new_persistent_connections"] > 0 for item in metrics
+        ),
+        "new_persistent_connections_distribution": stats([
+            item["new_persistent_connections"] for item in metrics
+        ]),
+        "social_focal_opportunity_distribution": stats([
+            item["social_focal_opportunity_count"] for item in metrics
+        ]),
+        "choice_counts": dict(sorted(social_choices.items())),
+        "choice_shares": _shares(social_choices),
+        "dominant_social_choice_share": (
+            max(social_choices.values()) / total_choices if total_choices else 0.0
+        ),
+        "outcome_counts": dict(sorted(_sum_counters(item["social_outcome_counts"] for item in metrics).items())),
+        "final_support_strength_distribution": stats([
+            item["final_support_network_strength"] for item in metrics
+        ]),
+    }
+
+
+def _routine_aggregates(records: tuple[CalibrationRunRecord, ...]) -> dict[str, Any]:
+    counts = _sum_counters(record.metrics["routine_profile_counts"] for record in records)
+    for profile in ROUTINE_PROFILES:
+        counts.setdefault(profile, 0)
+    total = sum(counts.values())
+    dominant_profile, dominant_count = _dominant(counts)
+    return {
+        "profile_counts": dict(sorted(counts.items())),
+        "profile_shares": _shares(counts),
+        "dominant_profile": dominant_profile,
+        "dominant_share": dominant_count / total if total else 0.0,
+    }
+
+
+def _event_aggregates(
+    records: tuple[CalibrationRunRecord, ...],
+    duration_weeks: int,
+) -> dict[str, Any]:
+    event_counts = _sum_counters(record.metrics["event_id_counts"] for record in records)
+    category_counts = _sum_counters(
+        record.metrics["event_category_counts"] for record in records
+    )
+    option_counts = _sum_counters(record.metrics["chosen_option_counts"] for record in records)
+    outcome_counts = _sum_counters(record.metrics["outcome_counts"] for record in records)
+    total_events = sum(event_counts.values())
+    total_categories = sum(category_counts.values())
+    dominant_event_id, dominant_event_count = _dominant(event_counts)
+    dominant_category, dominant_category_count = _dominant(category_counts)
+    return {
+        "event_week_rate": (
+            sum(record.metrics["event_weeks"] for record in records)
+            / max(1, len(records) * duration_weeks)
+        ),
+        "event_free_weeks_distribution": stats([
+            record.metrics["event_free_weeks"] for record in records
+        ]),
+        "event_counts": dict(sorted(event_counts.items())),
+        "event_shares": _shares(event_counts),
+        "event_category_counts": dict(sorted(category_counts.items())),
+        "event_category_shares": _shares(category_counts),
+        "chosen_option_counts": dict(sorted(option_counts.items())),
+        "chosen_option_shares": _shares(option_counts),
+        "outcome_counts": dict(sorted(outcome_counts.items())),
+        "outcome_shares": _shares(outcome_counts),
+        "dominant_event_id": dominant_event_id,
+        "dominant_event_share": (
+            dominant_event_count / total_events if total_events else 0.0
+        ),
+        "dominant_category": dominant_category,
+        "dominant_category_share": (
+            dominant_category_count / total_categories if total_categories else 0.0
+        ),
+    }
+
+
+def _adaptation_aggregates(records: tuple[CalibrationRunRecord, ...]) -> dict[str, Any]:
+    habit_strengths = [
+        strength
+        for record in records
+        for strength in record.metrics["final_managed_habit_strengths"]
+    ]
+    return {
+        "habits_formed_distribution": stats([
+            record.metrics["habits_formed"] for record in records
+        ]),
+        "final_habit_strength_distribution": stats(habit_strengths),
+        "max_habit_familiarity_distribution": stats([
+            record.metrics["max_habit_familiarity"] for record in records
+        ]),
+        "max_weekly_personality_delta_distribution": stats([
+            record.metrics["max_weekly_personality_delta"] for record in records
+        ]),
+        "max_anchor_displacement_distribution": stats([
+            record.metrics["max_anchor_displacement"] for record in records
+        ]),
+    }
+
+
+def stats(values: Iterable[Any]) -> dict[str, float]:
+    numeric = sorted(_to_float(value) for value in values)
+    if not numeric:
+        return _empty_stats()
+    return {
+        "min": numeric[0],
+        "p05": percentile(numeric, 0.05),
+        "p25": percentile(numeric, 0.25),
+        "p50": percentile(numeric, 0.50),
+        "p75": percentile(numeric, 0.75),
+        "p95": percentile(numeric, 0.95),
+        "max": numeric[-1],
+        "mean": float(mean(numeric)),
+    }
+
+
+def stats_optional(values: Iterable[Any]) -> dict[str, float]:
+    return stats(value for value in values if value is not None)
+
+
+def percentile(sorted_values: list[float], quantile: float) -> float:
+    """Linear interpolation between closest ranks, deterministic and dependency-free."""
+
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    position = quantile * (len(sorted_values) - 1)
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return sorted_values[lower]
+    fraction = position - lower
+    return sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * fraction
+
+
+def _assert_hard_invariants(
+    *,
+    week: int,
+    agent: AgentState,
+    consequence_records: tuple[Any, ...],
+    consequence_runtime: Any,
+    adaptation_records: tuple[Any, ...],
+    provenance_ids: set[str],
+) -> None:
+    for account in MONEY_ACCOUNTS:
+        if getattr(agent.financial, account) < Decimal("0.00"):
+            raise HardInvariantError(f"Negative money account '{account}' at week {week}.")
+    if _contains_nonfinite(agent):
+        raise HardInvariantError(f"Non-finite state value at week {week}.")
+    for record in consequence_records:
+        _unique_id(f"consequence:{record.consequence_id}", provenance_ids)
+        for application in record.effect_applications:
+            if application.scheduled_effect_id:
+                _unique_id(f"effect_application:{application.scheduled_effect_id}", provenance_ids)
+        for application in record.financial_charge_applications:
+            if application.amount_due != application.amount_paid + application.amount_unpaid:
+                raise HardInvariantError("Financial charge due != paid + unpaid.")
+            if sum((transfer.amount for transfer in application.funding), Decimal("0.00")) != application.amount_paid:
+                raise HardInvariantError("Financial charge funding transfers do not sum to paid.")
+            if application.scheduled_charge_id:
+                _unique_id(f"charge_application:{application.scheduled_charge_id}", provenance_ids)
+        for scheduled in record.scheduled_effects_created:
+            _unique_id(f"scheduled_effect:{scheduled.scheduled_effect_id}", provenance_ids)
+        for scheduled in record.scheduled_financial_charges_created:
+            _unique_id(f"scheduled_charge:{scheduled.scheduled_charge_id}", provenance_ids)
+    if consequence_runtime is not None:
+        for scheduled in consequence_runtime.pending_scheduled_effects:
+            if scheduled.due_week <= week:
+                raise HardInvariantError("Past-due scheduled effect remains pending.")
+        for scheduled in consequence_runtime.pending_scheduled_financial_charges:
+            if scheduled.due_week <= week:
+                raise HardInvariantError("Past-due scheduled financial charge remains pending.")
+    for record in adaptation_records:
+        for change in record.personality_changes:
+            if abs(change.delta) > PERSONALITY_WEEKLY_CAP:
+                raise HardInvariantError("M11 weekly personality cap exceeded.")
+            if abs(change.after - change.anchor) > PERSONALITY_ANCHOR_CAP:
+                raise HardInvariantError("M11 personality anchor cap exceeded.")
+
+
+def _checkpoint(agent: AgentState) -> dict[str, Any]:
+    output = {
+        "liquid": _liquid(agent),
+        "debt_balance": _debt_balance(agent),
+        "arrear_balance": _arrear_balance(agent),
+        "currently_employed": _is_currently_employed(agent),
+        "education_progress": agent.education.progress,
+        "education_status": agent.education.status,
+        "connection_count": len(agent.social.connections),
+        "support_network_strength": agent.social.support_network_strength,
+    }
+    for account in MONEY_ACCOUNTS:
+        output[account] = getattr(agent.financial, account)
+    return output
 
 
 def _with_seed_and_duration(config: LifeSimConfig, seed: int, duration_weeks: int) -> LifeSimConfig:
@@ -137,160 +1292,132 @@ def _with_seed_and_duration(config: LifeSimConfig, seed: int, duration_weeks: in
     )
 
 
-def _run_summary(
-    config: LifeSimConfig,
-    initial_agent: AgentState,
-    pipeline: WeeklyPipeline,
-    checkpoints: tuple[int, ...],
-) -> dict[str, Any]:
-    rng = create_rng(config.simulation.seed)
-    agent = initial_agent
-    checkpoint_summaries = {0: _agent_checkpoint(agent)} if 0 in checkpoints else {}
-    event_history: Any = EventHistory()
-    decision_history = None
-    consequence_runtime = None
-    learning_runtime = None
-    passive_runtime = None
-    employment_runtime = None
-    development_runtime = None
-    social_runtime = None
-    adaptation_runtime = None
-    for week in range(1, config.simulation.duration_weeks + 1):
-        context = WeeklyContext(
-            week=week,
-            config=config,
-            rng=rng,
-            event_history=event_history,
-            decision_history=decision_history,
-            consequence_runtime=consequence_runtime,
-            learning_runtime=learning_runtime,
-            passive_runtime=passive_runtime,
-            employment_runtime=employment_runtime,
-            development_runtime=development_runtime,
-            social_runtime=social_runtime,
-            adaptation_runtime=adaptation_runtime,
+def _liquid(agent: AgentState) -> Decimal:
+    return sum((getattr(agent.financial, account) for account in MONEY_ACCOUNTS), Decimal("0.00"))
+
+
+def _debt_balance(agent: AgentState) -> Decimal:
+    return sum((debt.balance for debt in agent.financial.debts), Decimal("0.00"))
+
+
+def _arrear_balance(agent: AgentState) -> Decimal:
+    return sum((arrear.balance for arrear in agent.financial.arrears), Decimal("0.00"))
+
+
+def _is_currently_employed(agent: AgentState) -> bool:
+    return agent.employment.status in {"employed", "student_part_time"}
+
+
+def _path_value(agent: AgentState, path: str) -> float:
+    section, field = path.split(".", 1)
+    return float(getattr(getattr(agent, section), field))
+
+
+def _synthetic_event_id(event_id: str) -> bool:
+    return event_id.startswith(
+        (
+            "weekly_",
+            "employment_",
+            "social_",
         )
-        result = pipeline.advance(agent, context)
-        agent = result.agent_state
-        if result.event_history is not None:
-            event_history = result.event_history
-        if result.decision_history is not None:
-            decision_history = result.decision_history
-        if result.consequence_runtime is not None:
-            consequence_runtime = result.consequence_runtime
-        if result.learning_runtime is not None:
-            learning_runtime = result.learning_runtime
-        if result.passive_runtime is not None:
-            passive_runtime = result.passive_runtime
-        if result.employment_runtime is not None:
-            employment_runtime = result.employment_runtime
-        if result.development_runtime is not None:
-            development_runtime = result.development_runtime
-        if result.social_runtime is not None:
-            social_runtime = result.social_runtime
-        if result.adaptation_runtime is not None:
-            adaptation_runtime = result.adaptation_runtime
-        if week in checkpoints:
-            checkpoint_summaries[week] = _agent_checkpoint(agent)
+    )
 
-    records = consequence_runtime.history.records if consequence_runtime is not None else ()
-    charge_applications = [
-        application
-        for record in records
-        for application in record.financial_charge_applications
-    ]
+
+def _sum_counters(items: Iterable[Mapping[str, int]]) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    for item in items:
+        counter.update(item)
+    return counter
+
+
+def _shares(counter: Counter[str]) -> dict[str, float]:
+    total = sum(counter.values())
+    if not total:
+        return {}
+    return {key: value / total for key, value in sorted(counter.items())}
+
+
+def _dominant(counter: Counter[str]) -> tuple[str, int]:
+    if not counter:
+        return "", 0
+    return max(sorted(counter.items()), key=lambda item: item[1])
+
+
+def _rate(values: Iterable[Any]) -> float:
+    materialized = tuple(values)
+    if not materialized:
+        return 0.0
+    return sum(1 for value in materialized if value) / len(materialized)
+
+
+def _to_float(value: Any) -> float:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    return float(value)
+
+
+def _empty_stats() -> dict[str, float]:
     return {
-        "checkpoints": checkpoint_summaries,
-        "event_count": (
-            len(event_history.occurrences) if event_history is not None else 0
-        ),
-        "charge_count": len(charge_applications),
-        "unpaid_charge_amount": sum(
-            (application.amount_unpaid for application in charge_applications),
-            Decimal("0.00"),
-        ),
+        "min": 0.0,
+        "p05": 0.0,
+        "p25": 0.0,
+        "p50": 0.0,
+        "p75": 0.0,
+        "p95": 0.0,
+        "max": 0.0,
+        "mean": 0.0,
     }
 
 
-def _aggregate_metrics(
-    summaries: list[dict[str, Any]],
-    checkpoints: tuple[int, ...],
-) -> dict[str, Any]:
-    checkpoint_metrics = {
-        week: _checkpoint_metrics(summaries, week)
-        for week in checkpoints
-        if any(week in summary["checkpoints"] for summary in summaries)
-    }
-    event_counts = [summary["event_count"] for summary in summaries]
-    charge_counts = [summary["charge_count"] for summary in summaries]
-    unpaid_totals = [summary["unpaid_charge_amount"] for summary in summaries]
+def _unique_id(value: str, seen: set[str]) -> None:
+    if value in seen:
+        raise HardInvariantError(f"Duplicate provenance id '{value}'.")
+    seen.add(value)
+
+
+def _contains_nonfinite(value: Any) -> bool:
+    if isinstance(value, Decimal):
+        return not value.is_finite()
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if value is None or isinstance(value, int | str | bool):
+        return False
+    if isinstance(value, tuple | list):
+        return any(_contains_nonfinite(item) for item in value)
+    if hasattr(value, "__dataclass_fields__"):
+        return any(
+            _contains_nonfinite(getattr(value, field))
+            for field in value.__dataclass_fields__
+        )
+    return False
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_json_value(item) for item in value]
+    return value
+
+
+def _stats_line(label: str, values: Mapping[str, float]) -> str:
+    return (
+        f"- {label}: p05 {values.get('p05', 0.0):.2f}, "
+        f"p50 {values.get('p50', 0.0):.2f}, p95 {values.get('p95', 0.0):.2f}, "
+        f"mean {values.get('mean', 0.0):.2f}"
+    )
+
+
+def _checkpoint_triplets(values: Mapping[str, Mapping[str, float]]) -> dict[str, str]:
     return {
-        "checkpoints": checkpoint_metrics,
-        "avg_events_per_run": _avg(event_counts),
-        "avg_financial_charges_per_run": _avg(charge_counts),
-        "avg_unpaid_charge_amount_per_run": _avg_decimal(unpaid_totals),
+        week: (
+            f"{stats_values.get('p05', 0.0):.2f}/"
+            f"{stats_values.get('p50', 0.0):.2f}/"
+            f"{stats_values.get('p95', 0.0):.2f}"
+        )
+        for week, stats_values in values.items()
     }
-
-
-def _agent_checkpoint(agent: Any) -> dict[str, Decimal | float | int]:
-    return {
-        "liquid": (
-            agent.financial.cash
-            + agent.financial.bank_balance
-            + agent.financial.savings
-            + agent.financial.emergency_fund
-        ),
-        "arrears": sum((arrear.balance for arrear in agent.financial.arrears), Decimal("0.00")),
-        "employed": 1.0 if agent.employment.status in {"employed", "student_part_time"} else 0.0,
-        "education_progress": agent.education.progress,
-        "connections": len(agent.social.connections),
-    }
-
-
-def _checkpoint_metrics(summaries: list[dict[str, Any]], week: int) -> dict[str, float]:
-    snapshots = [
-        summary["checkpoints"][week]
-        for summary in summaries
-        if week in summary["checkpoints"]
-    ]
-    return {
-        "avg_liquid": _avg_decimal([snapshot["liquid"] for snapshot in snapshots]),
-        "avg_arrears": _avg_decimal([snapshot["arrears"] for snapshot in snapshots]),
-        "employment_rate": _avg([snapshot["employed"] for snapshot in snapshots]),
-        "avg_education_progress": _avg([
-            snapshot["education_progress"] for snapshot in snapshots
-        ]),
-        "avg_connections": _avg([snapshot["connections"] for snapshot in snapshots]),
-    }
-
-
-def _warnings(metrics: dict[str, Any], failures: int) -> tuple[str, ...]:
-    warnings: list[str] = []
-    if failures:
-        warnings.append("RUN_FAILURES")
-    events = metrics["avg_events_per_run"]
-    if events < 5.0:
-        warnings.append("EVENT_DOMINANCE")
-    if metrics["avg_financial_charges_per_run"] < 1.0:
-        warnings.append("NO_FINANCIAL_PRESSURE")
-    if metrics["avg_unpaid_charge_amount_per_run"] > 300.0:
-        warnings.append("UNIVERSAL_ARREARS")
-    final = metrics["checkpoints"].get(156)
-    if final is not None:
-        if final["avg_education_progress"] >= 99.0:
-            warnings.append("UNIVERSAL_GRADUATION")
-        if final["avg_education_progress"] <= 1.0:
-            warnings.append("NEAR_ZERO_GRADUATION")
-        if final["employment_rate"] >= 0.98:
-            warnings.append("EMPLOYMENT_TOO_EASY")
-        if final["employment_rate"] <= 0.05:
-            warnings.append("EMPLOYMENT_TOO_HARD")
-    return tuple(warnings)
-
-
-def _avg(values: list[float | int]) -> float:
-    return float(mean(values)) if values else 0.0
-
-
-def _avg_decimal(values: list[Decimal]) -> float:
-    return float(sum(values, Decimal("0.00")) / Decimal(len(values))) if values else 0.0
