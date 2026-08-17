@@ -140,7 +140,7 @@ class RoutineEngine:
     ) -> tuple[PassiveLifeRuntimeState, EventOccurrence, DecisionHistory, Any]:
         if context.week in runtime.processed_routine_planning_weeks:
             raise ValueError(f"Routine planning already processed for week {context.week}.")
-        occurrence = _routine_occurrence(context, self._catalog)
+        occurrence = _routine_occurrence(context, self._catalog, state)
         decision = decision_engine.decide_event(state, context, occurrence)
         next_history = history.record((decision,))
         if decision.chosen_option_id is None:
@@ -355,7 +355,11 @@ def _runtime(context: WeeklyContext) -> PassiveLifeRuntimeState:
     return runtime
 
 
-def _routine_occurrence(context: WeeklyContext, catalog: RoutineCatalog) -> EventOccurrence:
+def _routine_occurrence(
+    context: WeeklyContext,
+    catalog: RoutineCatalog,
+    state: AgentState | None = None,
+) -> EventOccurrence:
     return EventOccurrence(
         event_id="weekly_routine",
         version="1",
@@ -365,11 +369,15 @@ def _routine_occurrence(context: WeeklyContext, catalog: RoutineCatalog) -> Even
         title="Weekly routine",
         summary="Choose an ordinary weekly routine.",
         tags=("routine",),
-        options=tuple(_profile_option(profile) for profile in catalog.profiles),
+        options=tuple(_profile_option(profile, state) for profile in catalog.profiles),
     )
 
 
-def _profile_option(profile: RoutineProfile) -> EventOption:
+def _profile_option(
+    profile: RoutineProfile,
+    state: AgentState | None = None,
+) -> EventOption:
+    repeat_penalty = _repeat_penalty(profile, state)
     return EventOption(
         option_id=profile.profile_id,
         label=profile.label,
@@ -377,20 +385,27 @@ def _profile_option(profile: RoutineProfile) -> EventOption:
         estimated_cost=profile.estimated_cost,
         time_cost_hours=profile.time_cost_hours,
         energy_cost=profile.energy_cost,
-        short_term_value=profile.short_term_value,
-        future_value=profile.future_value,
+        short_term_value=max(-1.0, profile.short_term_value - repeat_penalty),
+        future_value=max(-1.0, profile.future_value - repeat_penalty * 0.5),
         perceived_risk=profile.perceived_risk,
-        uncertainty=profile.uncertainty,
+        uncertainty=min(1.0, profile.uncertainty + repeat_penalty * 0.35),
         social_value=profile.social_value,
         social_pressure=profile.social_pressure,
-        autonomy_value=profile.autonomy_value,
+        autonomy_value=max(-1.0, profile.autonomy_value - repeat_penalty * 0.4),
         learning_value=profile.learning_value,
         health_value=profile.health_value,
-        comfort_value=profile.comfort_value,
+        comfort_value=max(-1.0, profile.comfort_value - repeat_penalty),
         goal_tags=profile.goal_tags,
         behavior_tags=profile.behavior_tags,
         requires_full_estimated_cost=False,
     )
+
+
+def _repeat_penalty(profile: RoutineProfile, state: AgentState | None) -> float:
+    if state is None or state.routine.current_profile_id != profile.profile_id:
+        return 0.0
+    repeated_weeks = max(0, state.routine.weeks_in_current_profile - 1)
+    return min(1.20, repeated_weeks * 0.12)
 
 
 def _process_debts(
@@ -645,10 +660,12 @@ def _bounded_replace(
     section_name, field_name = path.split(".", 1)
     section = getattr(state, section_name)
     before = getattr(section, field_name)
-    raw_after = before + delta
-    if path == "health.sleep_debt":
+    if path == "health.sleep_debt" or path == "needs.food_security":
+        raw_after = before + delta
         after = max(0.0, raw_after)
     else:
+        effective_delta = _boundary_sensitive_delta(before, delta)
+        raw_after = before + effective_delta
         after = min(100.0, max(0.0, raw_after))
     clamped = after != raw_after
     next_state = replace(state, **{section_name: replace(section, **{field_name: after})})
@@ -661,6 +678,18 @@ def _bounded_replace(
         reason=reason,
         source=source,
     )
+
+
+def _boundary_sensitive_delta(before: float, delta: float) -> float:
+    """Dampen ordinary recurring effects as bounded state approaches 0 or 100."""
+
+    if delta > 0.0:
+        distance = max(0.0, 100.0 - before)
+    elif delta < 0.0:
+        distance = max(0.0, before)
+    else:
+        return 0.0
+    return delta * distance / (distance + 120.0)
 
 
 def _apply_unpaid_pressure(

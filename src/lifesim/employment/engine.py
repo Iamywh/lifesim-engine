@@ -1140,18 +1140,33 @@ def _bounded_replace(
     section_name, field_name = path.split(".", 1)
     section = getattr(state, section_name)
     before = getattr(section, field_name)
-    raw_after = before + delta
+    effective_delta = _boundary_sensitive_delta(before, delta)
+    raw_after = before + effective_delta
     after = min(100.0, max(0.0, raw_after))
     clamped = after != raw_after
+    rounded_before = round(before, 12)
+    rounded_after = round(after, 12)
     next_state = replace(state, **{section_name: replace(section, **{field_name: after})})
     return next_state, EmploymentEffectApplication(
         path=path,
-        before=before,
-        after=after,
-        delta=after - before,
+        before=rounded_before,
+        after=rounded_after,
+        delta=round(rounded_after - rounded_before, 12),
         clamped=clamped,
         reason=reason,
     )
+
+
+def _boundary_sensitive_delta(before: float, delta: float) -> float:
+    """Dampen ordinary recurring work effects as bounded state approaches 0 or 100."""
+
+    if delta > 0.0:
+        distance = max(0.0, 100.0 - before)
+    elif delta < 0.0:
+        distance = max(0.0, before)
+    else:
+        return 0.0
+    return delta * distance / (distance + 120.0)
 
 
 def _clear_employment(state: AgentState, *, search_intensity: float) -> AgentState:

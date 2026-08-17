@@ -15,6 +15,7 @@ from lifesim.calibration import CalibrationResult, CalibrationRunRecord, run_cal
 from lifesim.calibration.runner import (
     HardInvariantError,
     _assert_hard_invariants,
+    _Tracker,
     aggregate_run_records,
     diagnose_warnings,
     percentile,
@@ -23,6 +24,14 @@ from lifesim.calibration.runner import (
 )
 from lifesim.canonical import build_canonical_engine, build_canonical_transitions
 from lifesim.config import load_config
+from lifesim.employment.model import ApplicationStageRecord
+from lifesim.social.model import (
+    SocialEncounterAudit,
+    SocialInteractionOutcomeAudit,
+    SocialInteractionRecord,
+    SocialOutcomeProbability,
+    SocialPlanningRecord,
+)
 from lifesim.weekly import WeeklyTransitionResult
 
 MAYA_SCENARIO = Path("configs/scenarios/maya_start.toml")
@@ -282,6 +291,113 @@ def test_employment_tracking_counts_observed_contract_starts() -> None:
     assert employment["ever_employed_rate_by_checkpoint"]["26"] == 1.0
     assert employment["current_employed_rate_by_checkpoint"]["26"] == 1.0
     assert employment["jobs_held_distribution"]["p50"] == 1.0
+    assert employment["application_submission_count"] > 0
+    assert employment["interview_invitation_count"] > 0
+    assert employment["interview_attended_count"] > 0
+    assert employment["offer_count"] > 0
+    assert employment["accepted_offer_count"] > 0
+    assert employment["application_to_interview_rate"] > 0.0
+    assert employment["interview_to_offer_rate"] > 0.0
+    assert employment["offer_acceptance_rate"] > 0.0
+
+
+def test_employment_tracker_uses_real_m8_stage_semantics() -> None:
+    tracker = _Tracker(load_agent_state(MAYA_SCENARIO), ())
+
+    tracker._observe_employment(
+        (
+            employment_stage("APPLICATION_DECISION", "skipped", "SKIPPED", week=1),
+            employment_stage("APPLICATION_DECISION", "submitted", "SUBMITTED", week=2),
+            employment_stage(
+                "APPLICATION_RESOLVED",
+                "interview_invited",
+                "INTERVIEW_INVITED",
+                week=3,
+            ),
+            employment_stage(
+                "INTERVIEW_DECISION",
+                "interview_attended",
+                "INTERVIEW_ATTENDED",
+                week=4,
+            ),
+            employment_stage("INTERVIEW_RESOLVED", "offer_available", "OFFER_AVAILABLE", week=5),
+            employment_stage(
+                "OFFER_DECISION",
+                "accepted_start_scheduled",
+                "ACCEPTED",
+                week=6,
+            ),
+        )
+    )
+    metrics = tracker.final_metrics(load_agent_state(MAYA_SCENARIO))
+    result = aggregate_run_records(
+        (run_record(1, **metrics),),
+        (12,),
+        12,
+    )["employment"]
+
+    assert metrics["application_submissions"] == 1
+    assert metrics["application_skips"] == 1
+    assert metrics["interview_invitations"] == 1
+    assert metrics["interviews_attended"] == 1
+    assert metrics["offers_produced"] == 1
+    assert metrics["offers_accepted"] == 1
+    assert result["application_to_interview_rate"] == 1.0
+    assert result["interview_to_offer_rate"] == 1.0
+    assert result["offer_acceptance_rate"] == 1.0
+
+
+def test_social_tracker_counts_one_voluntary_choice_and_contact_shares() -> None:
+    tracker = _Tracker(load_agent_state(MAYA_SCENARIO), ())
+
+    tracker._observe_social(
+        (
+            social_plan(("connect:roommate", "keep_social_light")),
+            social_interaction("connect:roommate", "roommate", "connect"),
+            social_plan(("engage:classmate",)),
+            social_interaction("engage:classmate", "classmate", "engage"),
+            social_interaction("", "", "no_opportunity", outcome=None),
+        )
+    )
+    metrics = tracker.final_metrics(load_agent_state(MAYA_SCENARIO))
+    social = aggregate_run_records((run_record(1, **metrics),), (12,), 12)["social"]
+
+    assert metrics["social_choice_counts"] == {"connect": 1, "engage": 1}
+    assert metrics["social_no_opportunity_weeks"] == 1
+    assert social["choice_shares"] == {"connect": 0.5, "engage": 0.5}
+    assert social["contact_shares"] == {"classmate": 0.5, "roommate": 0.5}
+    assert social["dominant_contact_id"] == "classmate"
+
+
+def test_warning_semantics_cover_education_social_and_habit_lock_in() -> None:
+    slow_education = aggregate_run_records((run_record(1, graduation_week=None),), (156,), 156)
+    assert "EDUCATION_TOO_SLOW" in diagnose_warnings(slow_education)
+
+    social_lock = aggregate_run_records(
+        (
+            run_record(
+                1,
+                social_choice_counts={"keep_social_light": 90, "connect": 10},
+                social_contact_counts={},
+            ),
+        ),
+        (156,),
+        156,
+    )
+    assert "SOCIAL_LOCK_IN" in diagnose_warnings(social_lock)
+
+    habit_lock = aggregate_run_records(
+        (
+            run_record(
+                1,
+                final_managed_habit_strengths=[82.0],
+                max_habit_familiarity=0.18,
+            ),
+        ),
+        (156,),
+        156,
+    )
+    assert "HABIT_LOCK_IN" in diagnose_warnings(habit_lock)
 
 
 def test_seed_42_full_156_canonical_smoke_and_prefix_determinism() -> None:
@@ -301,6 +417,60 @@ def test_seed_42_full_156_canonical_smoke_and_prefix_determinism() -> None:
 class NoopTransition:
     def apply(self, state, context):
         return WeeklyTransitionResult(agent_state=state)
+
+
+def employment_stage(
+    stage: str,
+    detail: str,
+    status_after: str,
+    *,
+    week: int,
+) -> ApplicationStageRecord:
+    return ApplicationStageRecord(
+        application_id="application-1",
+        week=week,
+        stage=stage,
+        status_after=status_after,
+        job_id="job-1",
+        job_version="1",
+        detail=detail,
+    )
+
+
+def social_plan(option_ids: tuple[str, ...]) -> SocialPlanningRecord:
+    return SocialPlanningRecord(
+        week=1,
+        routine_profile_id="balanced_week",
+        routine_social_contact=0.5,
+        event_id="social_focal",
+        event_version="1",
+        option_ids=option_ids,
+        availability=(),
+        encounter=SocialEncounterAudit(probability=0.0, roll=1.0, triggered=False),
+    )
+
+
+def social_interaction(
+    option_id: str,
+    contact_id: str,
+    interaction_type: str,
+    *,
+    outcome: SocialInteractionOutcomeAudit | None = None,
+) -> SocialInteractionRecord:
+    if outcome is None and option_id:
+        outcome = SocialInteractionOutcomeAudit(
+            probabilities=(SocialOutcomeProbability("neutral", 1.0),),
+            roll=0.5,
+            selected_outcome_id="neutral",
+        )
+    return SocialInteractionRecord(
+        week=1,
+        decision_id="decision-social",
+        option_id=option_id,
+        contact_id=contact_id,
+        interaction_type=interaction_type,
+        outcome=outcome,
+    )
 
 
 def run_record(seed: int, **overrides) -> CalibrationRunRecord:

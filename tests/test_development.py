@@ -428,6 +428,46 @@ def test_heavy_workload_costs_more_than_light_without_threshold_cliff() -> None:
     assert 0.0 < heavy[2].efficiency.final_efficiency < light[2].efficiency.final_efficiency
 
 
+def test_development_profile_calibration_responds_to_capacity_and_skill_focus() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    healthy = replace(
+        maya,
+        health=replace(maya.health, energy=92.0, sleep_debt=0.0),
+        mental=MentalState(
+            mood=75.0,
+            stress=18.0,
+            mental_load=25.0,
+            recovery_need=12.0,
+            loneliness=20.0,
+        ),
+    )
+    overloaded = replace(
+        maya,
+        health=replace(maya.health, energy=24.0, sleep_debt=18.0),
+        mental=MentalState(
+            mood=42.0,
+            stress=80.0,
+            mental_load=86.0,
+            recovery_need=90.0,
+            loneliness=35.0,
+        ),
+    )
+
+    base_scores = development_scores(maya)
+    healthy_scores = development_scores(healthy)
+    overloaded_scores = development_scores(overloaded)
+
+    intensive_vs_balanced_healthy = healthy_scores["intensive_study"] - healthy_scores["balanced_study"]
+    intensive_vs_balanced_overloaded = overloaded_scores["intensive_study"] - overloaded_scores["balanced_study"]
+    reduced_vs_intensive_base = base_scores["reduced_study"] - base_scores["intensive_study"]
+    reduced_vs_intensive_overloaded = overloaded_scores["reduced_study"] - overloaded_scores["intensive_study"]
+
+    assert intensive_vs_balanced_healthy > intensive_vs_balanced_overloaded
+    assert reduced_vs_intensive_overloaded > reduced_vs_intensive_base
+    assert base_scores["admin_skill_focus"] > base_scores["balanced_study"]
+    assert base_scores["language_skill_focus"] > base_scores["balanced_study"]
+
+
 def test_existing_employment_hours_increase_generic_m4_time_cost_pressure() -> None:
     maya = load_agent_state(MAYA_SCENARIO)
     working = employed_state(maya, weekly_hours=40.0)
@@ -648,6 +688,17 @@ def invalid_chosen_decision(decision: DecisionRecord, option_id: str) -> Decisio
 
 def decide_development(state, event) -> DecisionRecord:
     return DecisionEngine().decide_event(state, replace(context(), events=(event,)), event)
+
+
+def development_scores(state) -> dict[str, float]:
+    runtime, event = DevelopmentEngine(dev_catalog()).plan(state, context(), DevelopmentRuntimeState())
+    assert runtime.planned_profile_ids
+    decision = decide_development(state, event)
+    return {
+        evaluation.option_id: evaluation.final_score
+        for evaluation in decision.evaluations
+        if evaluation.final_score is not None
+    }
 
 
 def dev_catalog():

@@ -155,7 +155,7 @@ def aggregate_run_records(
     employment = _employment_aggregates(successes, checkpoints)
     education = _education_aggregates(successes, checkpoints)
     health = _health_aggregates(successes, duration_weeks)
-    social = _social_aggregates(successes)
+    social = _social_aggregates(successes, duration_weeks)
     routine = _routine_aggregates(successes)
     events = _event_aggregates(successes, duration_weeks)
     adaptation = _adaptation_aggregates(successes)
@@ -211,10 +211,11 @@ def diagnose_warnings(metrics: Mapping[str, Any]) -> tuple[str, ...]:
         warnings.append("EMPLOYMENT_TOO_HARD")
 
     education = metrics["education"]
-    if education["graduation_rate_by_checkpoint"].get("156", 0.0) >= 0.98:
+    graduation_156 = education["graduation_rate_by_checkpoint"].get("156", 0.0)
+    if graduation_156 >= 0.98:
         warnings.append("UNIVERSAL_GRADUATION")
-    if education["graduation_rate_by_checkpoint"].get("156", 0.0) <= 0.05:
-        warnings.append("NEAR_ZERO_GRADUATION")
+    if graduation_156 < 0.45:
+        warnings.append("EDUCATION_TOO_SLOW")
 
     finance = metrics["finance"]
     if finance["arrear_incidence_rate"] >= 0.95:
@@ -226,11 +227,18 @@ def diagnose_warnings(metrics: Mapping[str, Any]) -> tuple[str, ...]:
 
     if metrics["health_mental"]["boundary_saturation_rate"] > 0.10:
         warnings.append("STATE_BOUNDARY_SATURATION")
-    if metrics["social"]["dominant_social_choice_share"] >= 0.85:
+    social = metrics["social"]
+    if (
+        social["choice_shares"].get("keep_social_light", 0.0) >= 0.85
+        or social["dominant_contact_share"] >= 0.65
+    ):
         warnings.append("SOCIAL_LOCK_IN")
     if (
         metrics["adaptation"]["final_habit_strength_distribution"].get("p95", 0.0) >= 95.0
-        or metrics["adaptation"]["max_habit_familiarity_distribution"].get("p95", 0.0) > 0.5
+        or (
+            metrics["adaptation"]["final_habit_strength_distribution"].get("p95", 0.0) >= 75.0
+            and metrics["adaptation"]["max_habit_familiarity_distribution"].get("p95", 0.0) >= 0.17
+        )
     ):
         warnings.append("HABIT_LOCK_IN")
     if (
@@ -336,50 +344,60 @@ def _result_section(title: str, result: CalibrationResult) -> str:
             f"- warnings: {warnings}",
             "",
             "### Finance Distributions",
-            _stats_line("final liquid", finance["final_liquid_distribution"]),
-            _stats_line("maximum arrears", finance["max_arrear_distribution"]),
-            _stats_line("final arrears", finance["final_arrear_distribution"]),
-            _stats_line("final debt", finance["final_debt_distribution"]),
-            f"- arrear incidence rate: {finance['arrear_incidence_rate']:.2f}",
-            f"- arrear recovery rate: {finance['arrear_recovery_rate']:.2f}",
+            _stats_line("final liquid", finance["final_liquid_distribution"], precision=2),
+            _stats_line("maximum arrears", finance["max_arrear_distribution"], precision=2),
+            _stats_line("final arrears", finance["final_arrear_distribution"], precision=2),
+            _stats_line("final debt", finance["final_debt_distribution"], precision=2),
+            f"- arrear incidence rate: {finance['arrear_incidence_rate']:.3f}",
+            f"- arrear recovery rate: {finance['arrear_recovery_rate']:.3f}",
             f"- liquid p05/p50/p95 by checkpoint: {_checkpoint_triplets(finance['liquid_by_checkpoint'])}",
             "",
             "### Employment Funnel",
             f"- ever employed by checkpoint: {employment['ever_employed_rate_by_checkpoint']}",
             f"- current employed by checkpoint: {employment['current_employed_rate_by_checkpoint']}",
-            _stats_line("first employment week", employment["first_employment_week_distribution"]),
-            f"- application -> interview rate: {employment['application_to_interview_rate']:.2f}",
-            f"- interview -> offer rate: {employment['interview_to_offer_rate']:.2f}",
-            f"- offer -> acceptance rate: {employment['offer_acceptance_rate']:.2f}",
+            f"- submissions/skips/invitations/attended/offers/accepted: {employment['application_submission_count']} / {employment['application_skip_count']} / {employment['interview_invitation_count']} / {employment['interview_attended_count']} / {employment['offer_count']} / {employment['accepted_offer_count']}",
+            _stats_line("first employment week", employment["first_employment_week_distribution"], precision=2),
+            f"- application submission -> interview invitation rate: {employment['application_to_interview_rate']:.3f}",
+            f"- interview attended -> offer rate: {employment['interview_to_offer_rate']:.3f}",
+            f"- offer -> acceptance rate: {employment['offer_acceptance_rate']:.3f}",
             "",
             "### Education / Development",
+            f"- progress p05/p50/p95 by checkpoint: {_checkpoint_triplets(education['progress_by_checkpoint'])}",
             f"- graduation rate by checkpoint: {education['graduation_rate_by_checkpoint']}",
-            _stats_line("graduation week", education["graduation_week_distribution"]),
+            _stats_line("graduation week", education["graduation_week_distribution"], precision=2),
             f"- development profile shares: {education['development_profile_shares']}",
+            _stats_line("final efficiency", education["final_efficiency_distribution"], precision=4),
+            f"- efficiency factors: {_efficiency_factor_summary(education['efficiency_factor_distributions'])}",
             "",
             "### Health / Mental Saturation",
             f"- boundary saturation rate: {health['boundary_saturation_rate']:.4f}",
             f"- saturated fields: {health['saturated_fields']}",
+            f"- boundary direction by field: {_boundary_direction_summary(health['fields'])}",
             "",
             "### Social",
-            f"- new connection incidence rate: {social['new_connection_incidence_rate']:.2f}",
-            _stats_line("final connections", social["final_connection_distribution"]),
+            f"- focal opportunity rate: {social['focal_opportunity_rate']:.3f}",
+            f"- no-opportunity rate: {social['no_opportunity_rate']:.3f}",
+            f"- new connection incidence rate: {social['new_connection_incidence_rate']:.3f}",
+            _stats_line("final connections", social["final_connection_distribution"], precision=2),
+            f"- choice shares: {social['choice_shares']}",
+            f"- dominant contact/share: {social['dominant_contact_id']} / {social['dominant_contact_share']:.3f}",
             f"- social outcome counts: {social['outcome_counts']}",
             "",
             "### Routine",
             f"- profile shares: {routine['profile_shares']}",
-            f"- dominant profile/share: {routine['dominant_profile']} / {routine['dominant_share']:.2f}",
+            f"- dominant profile/share: {routine['dominant_profile']} / {routine['dominant_share']:.3f}",
             "",
             "### Events",
-            f"- event-week rate: {events['event_week_rate']:.2f}",
-            f"- dominant event/share: {events['dominant_event_id']} / {events['dominant_event_share']:.2f}",
-            f"- dominant category/share: {events['dominant_category']} / {events['dominant_category_share']:.2f}",
+            f"- event-week rate: {events['event_week_rate']:.3f}",
+            f"- dominant event/share: {events['dominant_event_id']} / {events['dominant_event_share']:.3f}",
+            f"- dominant category/share: {events['dominant_category']} / {events['dominant_category_share']:.3f}",
             "",
             "### Adaptation",
-            _stats_line("habits formed", adaptation["habits_formed_distribution"]),
-            _stats_line("max habit familiarity", adaptation["max_habit_familiarity_distribution"]),
-            _stats_line("max weekly personality delta", adaptation["max_weekly_personality_delta_distribution"]),
-            _stats_line("max anchor displacement", adaptation["max_anchor_displacement_distribution"]),
+            _stats_line("habits formed", adaptation["habits_formed_distribution"], precision=2),
+            _stats_line("final habit strength", adaptation["final_habit_strength_distribution"], precision=2),
+            _stats_line("max habit familiarity", adaptation["max_habit_familiarity_distribution"], precision=4),
+            _stats_line("max weekly personality delta", adaptation["max_weekly_personality_delta_distribution"], precision=6),
+            _stats_line("max anchor displacement", adaptation["max_anchor_displacement_distribution"], precision=6),
         ]
     )
 
@@ -555,13 +573,23 @@ class _Tracker:
         self.total_employed_weeks = 0
         self.jobs_held: set[str] = set()
         self.contract_endings = 0
-        self.application_count = 0
-        self.interview_count = 0
-        self.offer_count = 0
-        self.accepted_offers = 0
+        self.application_submissions = 0
+        self.application_skips = 0
+        self.interview_invitations = 0
+        self.interviews_attended = 0
+        self.interviews_declined = 0
+        self.offers_produced = 0
+        self.offers_accepted = 0
+        self.offers_declined = 0
         self.development_profiles: Counter[str] = Counter()
         self.effective_study_hours = 0.0
         self.effective_practice_hours = 0.0
+        self.final_efficiencies: list[float] = []
+        self.energy_factors: list[float] = []
+        self.stress_factors: list[float] = []
+        self.mental_load_factors: list[float] = []
+        self.recovery_factors: list[float] = []
+        self.workload_factors: list[float] = []
         self.skill_level_deltas: dict[str, float] = {}
         self.new_skills_created = 0
         self.graduation_week: int | None = None
@@ -577,7 +605,10 @@ class _Tracker:
         self.starting_connections = len(agent.social.connections)
         self.final_connections = self.starting_connections
         self.social_focal_opportunity_count = 0
+        self.social_no_opportunity_weeks = 0
+        self.social_executed_focal_choices = 0
         self.social_choices: Counter[str] = Counter()
+        self.social_contact_counts: Counter[str] = Counter()
         self.social_outcomes: Counter[str] = Counter()
         self.support_network_strength_checkpoints: dict[int, float] = {}
         self.routine_profiles: Counter[str] = Counter()
@@ -692,15 +723,29 @@ class _Tracker:
             "total_employed_weeks": self.total_employed_weeks,
             "jobs_held": len(self.jobs_held),
             "contract_endings": self.contract_endings,
-            "application_count": self.application_count,
-            "interview_count": self.interview_count,
-            "offer_count": self.offer_count,
-            "accepted_offers": self.accepted_offers,
-            "graduated": agent.education.status == "graduated",
+            "application_submissions": self.application_submissions,
+            "application_skips": self.application_skips,
+            "interview_invitations": self.interview_invitations,
+            "interviews_attended": self.interviews_attended,
+            "interviews_declined": self.interviews_declined,
+            "offers_produced": self.offers_produced,
+            "offers_accepted": self.offers_accepted,
+            "offers_declined": self.offers_declined,
+            "application_count": self.application_submissions,
+            "interview_count": self.interviews_attended,
+            "offer_count": self.offers_produced,
+            "accepted_offers": self.offers_accepted,
+            "graduated": agent.education.status == "completed",
             "graduation_week": self.graduation_week,
             "development_profile_counts": dict(self.development_profiles),
             "effective_study_hours": self.effective_study_hours,
             "effective_practice_hours": self.effective_practice_hours,
+            "final_efficiencies": tuple(self.final_efficiencies),
+            "energy_factors": tuple(self.energy_factors),
+            "stress_factors": tuple(self.stress_factors),
+            "mental_load_factors": tuple(self.mental_load_factors),
+            "recovery_factors": tuple(self.recovery_factors),
+            "workload_factors": tuple(self.workload_factors),
             "skill_level_deltas": dict(self.skill_level_deltas),
             "new_skills_created": self.new_skills_created,
             "final_skill_levels": final_skill_levels,
@@ -709,7 +754,10 @@ class _Tracker:
             "final_connection_count": self.final_connections,
             "new_persistent_connections": max(0, self.final_connections - self.starting_connections),
             "social_focal_opportunity_count": self.social_focal_opportunity_count,
+            "social_no_opportunity_weeks": self.social_no_opportunity_weeks,
+            "social_executed_focal_choices": self.social_executed_focal_choices,
             "social_choice_counts": dict(self.social_choices),
+            "social_contact_counts": dict(self.social_contact_counts),
             "social_outcome_counts": dict(self.social_outcomes),
             "support_network_strength_checkpoints": dict(self.support_network_strength_checkpoints),
             "final_support_network_strength": agent.social.support_network_strength,
@@ -790,20 +838,40 @@ class _Tracker:
                 and self.first_job_discovery_week is None
             ):
                 self.first_job_discovery_week = record.week
-            stage = getattr(record, "stage", "")
-            if stage == "APPLICATION_DECISION":
-                self.application_count += 1
-                self.first_application_week = self.first_application_week or record.week
-            elif stage == "APPLICATION_RESPONSE":
-                if record.status_after == "INTERVIEW_INVITED":
-                    self.interview_count += 1
-                    self.first_interview_week = self.first_interview_week or record.week
-            elif stage == "INTERVIEW_RESPONSE":
-                if record.status_after == "OFFER_AVAILABLE":
-                    self.offer_count += 1
+            event_ids_created = getattr(record, "event_ids_created", ())
+            for event_id in event_ids_created:
+                if event_id.startswith("employment_interview:"):
+                    self.interview_invitations += 1
+                elif event_id.startswith("employment_offer:"):
+                    self.offers_produced += 1
                     self.first_offer_week = self.first_offer_week or record.week
-            elif stage == "OFFER_DECISION" and record.status_after == "ACCEPTED":
-                self.accepted_offers += 1
+            stage = getattr(record, "stage", "")
+            detail = getattr(record, "detail", "")
+            status_after = getattr(record, "status_after", "")
+            if stage == "APPLICATION_DECISION":
+                if detail == "submitted" and status_after == "SUBMITTED":
+                    self.application_submissions += 1
+                    self.first_application_week = self.first_application_week or record.week
+                elif detail == "skipped" and status_after == "SKIPPED":
+                    self.application_skips += 1
+            elif stage == "APPLICATION_RESOLVED":
+                if detail == "interview_invited" and status_after == "INTERVIEW_INVITED":
+                    self.interview_invitations += 1
+            elif stage == "INTERVIEW_DECISION":
+                if detail == "interview_attended" and status_after == "INTERVIEW_ATTENDED":
+                    self.interviews_attended += 1
+                    self.first_interview_week = self.first_interview_week or record.week
+                elif detail == "interview_declined" and status_after == "DECLINED":
+                    self.interviews_declined += 1
+            elif stage == "INTERVIEW_RESOLVED":
+                if detail == "offer_available" and status_after == "OFFER_AVAILABLE":
+                    self.offers_produced += 1
+                    self.first_offer_week = self.first_offer_week or record.week
+            elif stage == "OFFER_DECISION":
+                if detail == "accepted_start_scheduled" and status_after == "ACCEPTED":
+                    self.offers_accepted += 1
+                elif detail == "declined" and status_after == "DECLINED":
+                    self.offers_declined += 1
             action = getattr(record, "action", "")
             if action == "contract_started":
                 self.jobs_held.add(record.contract_id)
@@ -819,6 +887,12 @@ class _Tracker:
             self.development_profiles[profile_id] += 1
             self.effective_study_hours += record.efficiency.effective_study_hours
             self.effective_practice_hours += record.efficiency.effective_practice_hours
+            self.final_efficiencies.append(record.efficiency.final_efficiency)
+            self.energy_factors.append(record.efficiency.energy_factor)
+            self.stress_factors.append(record.efficiency.stress_factor)
+            self.mental_load_factors.append(record.efficiency.mental_load_factor)
+            self.recovery_factors.append(record.efficiency.recovery_factor)
+            self.workload_factors.append(record.efficiency.workload_factor)
             if record.education_progress is not None and record.education_progress.completed:
                 self.graduation_week = self.graduation_week or record.week
             for skill in record.skill_developments:
@@ -834,17 +908,16 @@ class _Tracker:
             if option_ids:
                 self.social_focal_opportunity_count += 1
             interaction_type = getattr(record, "interaction_type", "")
-            if interaction_type:
-                self.social_choices[interaction_type] += 1
             option_id = getattr(record, "option_id", "")
-            if option_id.startswith("connect:"):
-                self.social_choices["connect"] += 1
-            elif option_id.startswith("seek_support:"):
-                self.social_choices["seek_support"] += 1
-            elif option_id.startswith("meet_new:"):
-                self.social_choices["new_encounter"] += 1
-            elif option_id == "keep_social_light":
-                self.social_choices["keep_social_light"] += 1
+            if interaction_type == "no_opportunity":
+                self.social_no_opportunity_weeks += 1
+            choice = _social_choice(option_id)
+            if choice:
+                self.social_choices[choice] += 1
+                self.social_executed_focal_choices += 1
+            contact_id = getattr(record, "contact_id", "")
+            if contact_id:
+                self.social_contact_counts[contact_id] += 1
             outcome = getattr(record, "outcome", None)
             if outcome is not None:
                 self.social_outcomes[outcome.selected_outcome_id] += 1
@@ -949,10 +1022,26 @@ def _employment_aggregates(
     checkpoints: tuple[int, ...],
 ) -> dict[str, Any]:
     metrics = [record.metrics for record in records]
-    applications = sum(item["application_count"] for item in metrics)
-    interviews = sum(item["interview_count"] for item in metrics)
-    offers = sum(item["offer_count"] for item in metrics)
-    accepted = sum(item["accepted_offers"] for item in metrics)
+    applications = sum(
+        item.get("application_submissions", item.get("application_count", 0))
+        for item in metrics
+    )
+    application_skips = sum(item.get("application_skips", 0) for item in metrics)
+    invitations = sum(
+        item.get("interview_invitations", item.get("interview_count", 0))
+        for item in metrics
+    )
+    interviews = sum(
+        item.get("interviews_attended", item.get("interview_count", 0))
+        for item in metrics
+    )
+    interviews_declined = sum(item.get("interviews_declined", 0) for item in metrics)
+    offers = sum(item.get("offers_produced", item.get("offer_count", 0)) for item in metrics)
+    accepted = sum(
+        item.get("offers_accepted", item.get("accepted_offers", 0))
+        for item in metrics
+    )
+    declined = sum(item.get("offers_declined", 0) for item in metrics)
     return {
         "ever_employed_rate_by_checkpoint": {
             str(week): _rate(
@@ -989,11 +1078,17 @@ def _employment_aggregates(
         ]),
         "jobs_held_distribution": stats([item["jobs_held"] for item in metrics]),
         "contract_endings_distribution": stats([item["contract_endings"] for item in metrics]),
-        "application_count": applications,
-        "interview_count": interviews,
+        "application_submission_count": applications,
+        "application_skip_count": application_skips,
+        "interview_invitation_count": invitations,
+        "interview_attended_count": interviews,
+        "interview_declined_count": interviews_declined,
         "offer_count": offers,
         "accepted_offer_count": accepted,
-        "application_to_interview_rate": interviews / applications if applications else 0.0,
+        "declined_offer_count": declined,
+        "application_count": applications,
+        "interview_count": interviews,
+        "application_to_interview_rate": invitations / applications if applications else 0.0,
         "interview_to_offer_rate": offers / interviews if interviews else 0.0,
         "offer_acceptance_rate": accepted / offers if offers else 0.0,
     }
@@ -1036,6 +1131,28 @@ def _education_aggregates(
         "effective_practice_hours_distribution": stats([
             item["effective_practice_hours"] for item in metrics
         ]),
+        "final_efficiency_distribution": stats([
+            value
+            for item in metrics
+            for value in item.get("final_efficiencies", ())
+        ]),
+        "efficiency_factor_distributions": {
+            "energy_factor": stats([
+                value for item in metrics for value in item.get("energy_factors", ())
+            ]),
+            "stress_factor": stats([
+                value for item in metrics for value in item.get("stress_factors", ())
+            ]),
+            "mental_load_factor": stats([
+                value for item in metrics for value in item.get("mental_load_factors", ())
+            ]),
+            "recovery_factor": stats([
+                value for item in metrics for value in item.get("recovery_factors", ())
+            ]),
+            "workload_factor": stats([
+                value for item in metrics for value in item.get("workload_factors", ())
+            ]),
+        },
         "new_skills_created_distribution": stats([
             item["new_skills_created"] for item in metrics
         ]),
@@ -1060,6 +1177,8 @@ def _health_aggregates(
             "minimum_distribution": stats([item["min"] for item in values]),
             "maximum_distribution": stats([item["max"] for item in values]),
             "boundary_weeks_distribution": stats(weeks_at_boundary),
+            "weeks_at_0_distribution": stats([item["weeks_at_0"] for item in values]),
+            "weeks_at_100_distribution": stats([item["weeks_at_100"] for item in values]),
         }
         if field in BOUNDED_FIELDS:
             total_boundary_weeks += sum(weeks_at_boundary)
@@ -1074,10 +1193,16 @@ def _health_aggregates(
     }
 
 
-def _social_aggregates(records: tuple[CalibrationRunRecord, ...]) -> dict[str, Any]:
+def _social_aggregates(
+    records: tuple[CalibrationRunRecord, ...],
+    duration_weeks: int,
+) -> dict[str, Any]:
     metrics = [record.metrics for record in records]
     social_choices = _sum_counters(item["social_choice_counts"] for item in metrics)
+    contact_counts = _sum_counters(item.get("social_contact_counts", {}) for item in metrics)
     total_choices = sum(social_choices.values())
+    total_contacts = sum(contact_counts.values())
+    dominant_contact_id, dominant_contact_count = _dominant(contact_counts)
     return {
         "starting_connection_distribution": stats([
             item["starting_connection_count"] for item in metrics
@@ -1094,10 +1219,33 @@ def _social_aggregates(records: tuple[CalibrationRunRecord, ...]) -> dict[str, A
         "social_focal_opportunity_distribution": stats([
             item["social_focal_opportunity_count"] for item in metrics
         ]),
+        "social_executed_focal_choice_distribution": stats([
+            item.get("social_executed_focal_choices", 0) for item in metrics
+        ]),
+        "social_no_opportunity_distribution": stats([
+            item.get("social_no_opportunity_weeks", 0) for item in metrics
+        ]),
+        "focal_opportunity_rate": (
+            sum(item["social_focal_opportunity_count"] for item in metrics)
+            / max(1, len(records) * duration_weeks)
+        ),
+        "no_opportunity_rate": (
+            sum(item.get("social_no_opportunity_weeks", 0) for item in metrics)
+            / max(1, len(records) * duration_weeks)
+        ),
         "choice_counts": dict(sorted(social_choices.items())),
         "choice_shares": _shares(social_choices),
+        "dominant_voluntary_choice_share": (
+            max(social_choices.values()) / total_choices if total_choices else 0.0
+        ),
         "dominant_social_choice_share": (
             max(social_choices.values()) / total_choices if total_choices else 0.0
+        ),
+        "contact_counts": dict(sorted(contact_counts.items())),
+        "contact_shares": _shares(contact_counts),
+        "dominant_contact_id": dominant_contact_id,
+        "dominant_contact_share": (
+            dominant_contact_count / total_contacts if total_contacts else 0.0
         ),
         "outcome_counts": dict(sorted(_sum_counters(item["social_outcome_counts"] for item in metrics).items())),
         "final_support_strength_distribution": stats([
@@ -1323,6 +1471,18 @@ def _synthetic_event_id(event_id: str) -> bool:
     )
 
 
+def _social_choice(option_id: str) -> str:
+    if option_id.startswith("connect:"):
+        return "connect"
+    if option_id.startswith("seek_support:"):
+        return "seek_support"
+    if option_id.startswith("engage:"):
+        return "engage"
+    if option_id == "keep_social_light":
+        return "keep_social_light"
+    return ""
+
+
 def _sum_counters(items: Iterable[Mapping[str, int]]) -> Counter[str]:
     counter: Counter[str] = Counter()
     for item in items:
@@ -1404,20 +1564,59 @@ def _json_value(value: Any) -> Any:
     return value
 
 
-def _stats_line(label: str, values: Mapping[str, float]) -> str:
+def _stats_line(
+    label: str,
+    values: Mapping[str, float],
+    *,
+    precision: int = 2,
+) -> str:
+    formatted = {
+        name: f"{values.get(name, 0.0):.{precision}f}"
+        for name in ("p05", "p50", "p95", "mean")
+    }
     return (
-        f"- {label}: p05 {values.get('p05', 0.0):.2f}, "
-        f"p50 {values.get('p50', 0.0):.2f}, p95 {values.get('p95', 0.0):.2f}, "
-        f"mean {values.get('mean', 0.0):.2f}"
+        f"- {label}: p05 {formatted['p05']}, "
+        f"p50 {formatted['p50']}, p95 {formatted['p95']}, "
+        f"mean {formatted['mean']}"
     )
 
 
-def _checkpoint_triplets(values: Mapping[str, Mapping[str, float]]) -> dict[str, str]:
+def _checkpoint_triplets(
+    values: Mapping[str, Mapping[str, float]],
+    *,
+    precision: int = 2,
+) -> dict[str, str]:
     return {
         week: (
-            f"{stats_values.get('p05', 0.0):.2f}/"
-            f"{stats_values.get('p50', 0.0):.2f}/"
-            f"{stats_values.get('p95', 0.0):.2f}"
+            f"{stats_values.get('p05', 0.0):.{precision}f}/"
+            f"{stats_values.get('p50', 0.0):.{precision}f}/"
+            f"{stats_values.get('p95', 0.0):.{precision}f}"
         )
         for week, stats_values in values.items()
+    }
+
+
+def _boundary_direction_summary(fields: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:
+    return {
+        field: (
+            f"0 weeks p50/p95 "
+            f"{metrics['weeks_at_0_distribution'].get('p50', 0.0):.1f}/"
+            f"{metrics['weeks_at_0_distribution'].get('p95', 0.0):.1f}; "
+            f"100 weeks p50/p95 "
+            f"{metrics['weeks_at_100_distribution'].get('p50', 0.0):.1f}/"
+            f"{metrics['weeks_at_100_distribution'].get('p95', 0.0):.1f}"
+        )
+        for field, metrics in fields.items()
+    }
+
+
+def _efficiency_factor_summary(factors: Mapping[str, Mapping[str, float]]) -> dict[str, str]:
+    return {
+        name: (
+            f"p05/p50/p95 "
+            f"{values.get('p05', 0.0):.4f}/"
+            f"{values.get('p50', 0.0):.4f}/"
+            f"{values.get('p95', 0.0):.4f}"
+        )
+        for name, values in factors.items()
     }

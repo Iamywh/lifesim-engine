@@ -996,9 +996,28 @@ def _effects_from_deltas(
     effects = []
     for path, delta in deltas.items():
         before = _state_value(state, path)
-        after = _clamp(before + delta)
-        effects.append(SocialStateEffect(path=path, before=before, after=after, clamped=after != before + delta))
+        effective_delta = _boundary_sensitive_delta(before, delta)
+        raw_after = before + effective_delta
+        after = _clamp(raw_after)
+        effects.append(
+            SocialStateEffect(
+                path=path,
+                before=round(before, 12),
+                after=round(after, 12),
+                clamped=after != raw_after,
+            )
+        )
     return tuple(effects)
+
+
+def _boundary_sensitive_delta(before: float, delta: float) -> float:
+    if delta > 0.0:
+        distance = max(0.0, 100.0 - before)
+    elif delta < 0.0:
+        distance = max(0.0, before)
+    else:
+        return 0.0
+    return delta * distance / (distance + 120.0)
 
 
 def _apply_state_effects(
