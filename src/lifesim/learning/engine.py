@@ -160,6 +160,13 @@ def evaluate_experience(record: ConsequenceRecord) -> ExperienceEvaluation:
         if score == 0.0:
             continue
         scored.append((_domain(application.path), application.path, score))
+    for application in record.financial_charge_applications:
+        if application.skipped:
+            continue
+        score = _score_financial_charge(application.amount_paid, application.amount_unpaid)
+        if score == 0.0:
+            continue
+        scored.append(("financial", "financial.charge", score))
 
     if not scored:
         return ExperienceEvaluation(
@@ -587,6 +594,12 @@ def _score_application(application: EffectApplication) -> float:
     else:
         return 0.0
     return round(sign * _normalized_magnitude(application.path, delta, application.before) * _domain_weight(application.path), 12)
+
+
+def _score_financial_charge(amount_paid: Decimal, amount_unpaid: Decimal) -> float:
+    paid_pressure = amount_paid / Decimal("125.00")
+    unpaid_pressure = amount_unpaid / Decimal("75.00")
+    return round(_clamp(-float(paid_pressure + unpaid_pressure) * 1.1, -1.0, 0.0), 12)
 
 
 def _delta(application: EffectApplication) -> Decimal | float:

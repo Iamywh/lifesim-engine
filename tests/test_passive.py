@@ -12,6 +12,7 @@ import pytest
 
 from lifesim.agents.scenario import load_agent_state
 from lifesim.agents.state import (
+    Arrear,
     Debt,
     FinancialState,
     IncomeStream,
@@ -45,6 +46,8 @@ from lifesim.events import (
     parse_event_catalog,
 )
 from lifesim.passive import (
+    ArrearSettlementEngine,
+    ArrearSettlementRecord,
     PassiveCashflowEngine,
     PassiveCashflowTransition,
     PassiveLifeRuntimeState,
@@ -601,6 +604,58 @@ def test_passive_history_rejects_duplicate_weeks_and_runtime_inconsistency() -> 
         PassiveLifeRuntimeState(processed_cashflow_weeks=(1,))
     with pytest.raises(ValueError, match="exactly match routine history"):
         PassiveLifeRuntimeState(processed_routine_execution_weeks=(1,))
+    with pytest.raises(ValueError, match="arrear settlement"):
+        PassiveLifeRuntimeState(processed_arrear_settlement_weeks=(1,))
+
+
+def test_arrear_settlement_history_must_match_processed_weeks_exactly() -> None:
+    record = ArrearSettlementRecord(week=1)
+    history = PassiveLifeRuntimeState().history.record_arrear_settlement(record)
+
+    with pytest.raises(ValueError, match="arrear settlement"):
+        PassiveLifeRuntimeState(history=history)
+
+    with pytest.raises(ValueError, match="arrear settlement"):
+        PassiveLifeRuntimeState(
+            history=history,
+            processed_arrear_settlement_weeks=(2,),
+        )
+
+
+def test_arrear_settlement_uses_oldest_first_full_funding_order() -> None:
+    state = with_financial(
+        bank=Decimal("3.00"),
+        cash=Decimal("2.00"),
+        savings=Decimal("4.00"),
+        emergency=Decimal("10.00"),
+        arrears=(
+            Arrear("newer", "utilities", Decimal("8.00"), 3, 3, 1),
+            Arrear("older", "housing", Decimal("12.00"), 1, 1, 1),
+        ),
+    )
+
+    next_state, runtime, record = ArrearSettlementEngine().apply(
+        state,
+        context(week=4),
+        PassiveLifeRuntimeState(),
+    )
+
+    assert runtime.processed_arrear_settlement_weeks == (4,)
+    assert record.entries[0].name == "older"
+    assert record.entries[0].amount_paid == Decimal("12.00")
+    assert [transfer.source for transfer in record.entries[0].funding] == [
+        "bank_balance",
+        "cash",
+        "savings",
+        "emergency_fund",
+    ]
+    assert tuple(arrear.obligation_id for arrear in next_state.financial.arrears) == ("newer",)
+    assert min(
+        next_state.financial.bank_balance,
+        next_state.financial.cash,
+        next_state.financial.savings,
+        next_state.financial.emergency_fund,
+    ) >= Decimal("0.00")
 
 
 def test_missed_obligation_audits_state_effects_and_reconciles_funding() -> None:
@@ -705,6 +760,53 @@ def test_austerity_emergence_changes_social_incentive_without_scripted_switch() 
     assert austerity.financial.bank_balance > social_streak.financial.bank_balance
     assert austerity.mental.loneliness > maya.mental.loneliness
     assert later_social_score > initial_social_score
+
+
+def test_routine_profile_calibration_responds_to_state_without_structural_recovery_lock() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    routine_engine = RoutineEngine(load_routine_catalog(ROUTINES))
+    healthy = replace(
+        maya,
+        health=replace(maya.health, energy=92.0, sleep_debt=0.0),
+        mental=replace(maya.mental, stress=18.0, mental_load=25.0, recovery_need=12.0),
+    )
+    depleted = replace(
+        maya,
+        health=replace(maya.health, energy=24.0, sleep_debt=18.0),
+        mental=replace(maya.mental, stress=75.0, mental_load=70.0, recovery_need=90.0),
+    )
+    lonely = replace(
+        maya,
+        mental=replace(maya.mental, loneliness=88.0),
+        needs=replace(maya.needs, belonging=20.0),
+    )
+
+    healthy_scores = routine_scores(healthy, routine_engine)
+    depleted_scores = routine_scores(depleted, routine_engine)
+    base_scores = routine_scores(maya, routine_engine)
+    lonely_scores = routine_scores(lonely, routine_engine)
+
+    healthy_recovery_gap = healthy_scores["recovery_focus_week"] - healthy_scores["low_cost_active_week"]
+    depleted_recovery_gap = depleted_scores["recovery_focus_week"] - depleted_scores["low_cost_active_week"]
+
+    assert healthy_scores["low_cost_active_week"] > healthy_scores["recovery_focus_week"]
+    assert depleted_recovery_gap > healthy_recovery_gap
+    assert lonely_scores["social_week"] > base_scores["social_week"]
+
+
+def test_boundary_sensitive_ordinary_routine_effects_do_not_pin_bounded_fields() -> None:
+    maya = load_agent_state(MAYA_SCENARIO)
+    state = maya
+    boundary_weeks = 0
+
+    for _ in range(80):
+        state, _, _ = execute_profile(state, "recovery_focus_week")
+        if state.mental.mood in (0.0, 100.0) or state.mental.loneliness in (0.0, 100.0):
+            boundary_weeks += 1
+
+    assert boundary_weeks == 0
+    assert 0.0 < state.mental.mood < 100.0
+    assert 0.0 < state.mental.loneliness < 100.0
 
 
 def test_low_cost_active_preserves_more_money_than_social_and_improves_physical_state() -> None:
@@ -891,6 +993,22 @@ def routine_score(state, engine: RoutineEngine, profile_id: str, *, week: int) -
     return evaluation.final_score
 
 
+def routine_scores(state, engine: RoutineEngine, *, week: int = 1) -> dict[str, float]:
+    runtime, _, _, decision = engine.plan(
+        state,
+        context(week=week),
+        PassiveLifeRuntimeState(),
+        DecisionEngine(),
+        DecisionHistory(),
+    )
+    assert runtime.planned_routine_profile_id
+    return {
+        evaluation.option_id: evaluation.final_score
+        for evaluation in decision.evaluations
+        if evaluation.final_score is not None
+    }
+
+
 def with_financial(
     *,
     bank: Decimal = Decimal("0.00"),
@@ -900,6 +1018,7 @@ def with_financial(
     debts: tuple[Debt, ...] = (),
     income_streams: tuple[IncomeStream, ...] = (),
     commitments: tuple[RecurringCommitment, ...] = (),
+    arrears: tuple[Arrear, ...] = (),
 ):
     maya = load_agent_state(MAYA_SCENARIO)
     return replace(
@@ -913,6 +1032,7 @@ def with_financial(
             debts=debts,
             income_streams=income_streams,
             recurring_commitments=commitments,
+            arrears=arrears,
         ),
     )
 

@@ -3,13 +3,12 @@ from __future__ import annotations
 from calendar import monthrange
 from dataclasses import dataclass, replace
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from random import Random
 from typing import Any
 
 from lifesim.agents.state import (
     AgentState,
-    Arrear,
     Debt,
     FinancialState,
     RoutineState,
@@ -17,7 +16,16 @@ from lifesim.agents.state import (
 from lifesim.decisions.engine import DecisionEngine
 from lifesim.decisions.model import DecisionHistory
 from lifesim.events.model import EventOccurrence, EventOption
+from lifesim.finance import (
+    MANDATORY_FUNDING_ORDER,
+    OPTIONAL_FUNDING_ORDER,
+    find_arrear,
+    money,
+    settle_liquid_amount,
+    upsert_arrear,
+)
 from lifesim.passive.model import (
+    ArrearSettlementRecord,
     CashflowEntry,
     CashflowRecord,
     FundingTransfer,
@@ -30,9 +38,8 @@ from lifesim.passive.model import (
 from lifesim.rng import derive_stable_seed
 from lifesim.weekly import WeeklyContext, WeeklyTransitionResult
 
-CENT = Decimal("0.01")
-FUNDING_ORDER = ("bank_balance", "cash", "savings", "emergency_fund")
-ROUTINE_OPTIONAL_FUNDING_ORDER = ("bank_balance", "cash")
+FUNDING_ORDER = MANDATORY_FUNDING_ORDER
+ROUTINE_OPTIONAL_FUNDING_ORDER = OPTIONAL_FUNDING_ORDER
 
 
 class PassiveCashflowEngine:
@@ -60,7 +67,7 @@ class PassiveCashflowEngine:
                     next_state,
                     financial=replace(
                         financial,
-                        bank_balance=_money(financial.bank_balance + stream.amount),
+                bank_balance=money(financial.bank_balance + stream.amount),
                     ),
                 )
             entries.append(
@@ -133,7 +140,7 @@ class RoutineEngine:
     ) -> tuple[PassiveLifeRuntimeState, EventOccurrence, DecisionHistory, Any]:
         if context.week in runtime.processed_routine_planning_weeks:
             raise ValueError(f"Routine planning already processed for week {context.week}.")
-        occurrence = _routine_occurrence(context, self._catalog)
+        occurrence = _routine_occurrence(context, self._catalog, state)
         decision = decision_engine.decide_event(state, context, occurrence)
         next_history = history.record((decision,))
         if decision.chosen_option_id is None:
@@ -212,9 +219,80 @@ class RoutineEngine:
         return next_state, runtime, record
 
 
+class ArrearSettlementEngine:
+    def apply(
+        self,
+        state: AgentState,
+        context: WeeklyContext,
+        runtime: PassiveLifeRuntimeState,
+    ) -> tuple[AgentState, PassiveLifeRuntimeState, ArrearSettlementRecord]:
+        if context.week in runtime.processed_arrear_settlement_weeks:
+            raise ValueError(f"Arrear settlement already processed for week {context.week}.")
+        financial = state.financial
+        entries: list[CashflowEntry] = []
+        arrears = sorted(financial.arrears, key=lambda item: (item.first_missed_week, item.obligation_id))
+        for arrear in arrears:
+            if arrear.balance <= Decimal("0.00"):
+                continue
+            settlement = settle_liquid_amount(financial, arrear.balance, FUNDING_ORDER)
+            financial = settlement.financial
+            remaining = settlement.amount_unpaid
+            updated_arrears = []
+            for current in financial.arrears:
+                if current.obligation_id != arrear.obligation_id:
+                    updated_arrears.append(current)
+                elif remaining > Decimal("0.00"):
+                    updated_arrears.append(
+                        replace(
+                            current,
+                            balance=remaining,
+                            last_updated_week=context.week,
+                        )
+                    )
+            financial = replace(financial, arrears=tuple(updated_arrears))
+            entries.append(
+                CashflowEntry(
+                    entry_id=f"arrear-settlement:{arrear.obligation_id}:{context.week}",
+                    kind="arrear_settlement",
+                    name=arrear.obligation_id,
+                    amount_due=arrear.balance,
+                    amount_paid=settlement.amount_paid,
+                    cadence="weekly",
+                    due_date=context.week_start.isoformat(),
+                    paid=settlement.fully_paid,
+                    funding=_funding_transfers(settlement.transfers),
+                    arrear_balance_after=max(Decimal("0.00"), remaining),
+                )
+            )
+            if settlement.amount_unpaid > Decimal("0.00"):
+                break
+        next_state = replace(state, financial=financial)
+        record = ArrearSettlementRecord(week=context.week, entries=tuple(entries))
+        runtime = replace(
+            runtime,
+            history=runtime.history.record_arrear_settlement(record),
+            processed_arrear_settlement_weeks=runtime.processed_arrear_settlement_weeks + (context.week,),
+        )
+        return next_state, runtime, record
+
+
 @dataclass(frozen=True, slots=True)
 class PassiveCashflowTransition:
     engine: PassiveCashflowEngine
+
+    def apply(self, state: AgentState, context: WeeklyContext) -> WeeklyTransitionResult:
+        runtime = _runtime(context)
+        next_state, runtime, record = self.engine.apply(state, context, runtime)
+        return WeeklyTransitionResult(
+            agent_state=next_state,
+            passive_records=(record,),
+            passive_runtime=runtime,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ArrearSettlementTransition:
+    engine: ArrearSettlementEngine
 
     def apply(self, state: AgentState, context: WeeklyContext) -> WeeklyTransitionResult:
         runtime = _runtime(context)
@@ -277,7 +355,11 @@ def _runtime(context: WeeklyContext) -> PassiveLifeRuntimeState:
     return runtime
 
 
-def _routine_occurrence(context: WeeklyContext, catalog: RoutineCatalog) -> EventOccurrence:
+def _routine_occurrence(
+    context: WeeklyContext,
+    catalog: RoutineCatalog,
+    state: AgentState | None = None,
+) -> EventOccurrence:
     return EventOccurrence(
         event_id="weekly_routine",
         version="1",
@@ -287,11 +369,15 @@ def _routine_occurrence(context: WeeklyContext, catalog: RoutineCatalog) -> Even
         title="Weekly routine",
         summary="Choose an ordinary weekly routine.",
         tags=("routine",),
-        options=tuple(_profile_option(profile) for profile in catalog.profiles),
+        options=tuple(_profile_option(profile, state) for profile in catalog.profiles),
     )
 
 
-def _profile_option(profile: RoutineProfile) -> EventOption:
+def _profile_option(
+    profile: RoutineProfile,
+    state: AgentState | None = None,
+) -> EventOption:
+    repeat_penalty = _repeat_penalty(profile, state)
     return EventOption(
         option_id=profile.profile_id,
         label=profile.label,
@@ -299,20 +385,27 @@ def _profile_option(profile: RoutineProfile) -> EventOption:
         estimated_cost=profile.estimated_cost,
         time_cost_hours=profile.time_cost_hours,
         energy_cost=profile.energy_cost,
-        short_term_value=profile.short_term_value,
-        future_value=profile.future_value,
+        short_term_value=max(-1.0, profile.short_term_value - repeat_penalty),
+        future_value=max(-1.0, profile.future_value - repeat_penalty * 0.5),
         perceived_risk=profile.perceived_risk,
-        uncertainty=profile.uncertainty,
+        uncertainty=min(1.0, profile.uncertainty + repeat_penalty * 0.35),
         social_value=profile.social_value,
         social_pressure=profile.social_pressure,
-        autonomy_value=profile.autonomy_value,
+        autonomy_value=max(-1.0, profile.autonomy_value - repeat_penalty * 0.4),
         learning_value=profile.learning_value,
         health_value=profile.health_value,
-        comfort_value=profile.comfort_value,
+        comfort_value=max(-1.0, profile.comfort_value - repeat_penalty),
         goal_tags=profile.goal_tags,
         behavior_tags=profile.behavior_tags,
         requires_full_estimated_cost=False,
     )
+
+
+def _repeat_penalty(profile: RoutineProfile, state: AgentState | None) -> float:
+    if state is None or state.routine.current_profile_id != profile.profile_id:
+        return 0.0
+    repeated_weeks = max(0, state.routine.weeks_in_current_profile - 1)
+    return min(1.20, repeated_weeks * 0.12)
 
 
 def _process_debts(
@@ -326,8 +419,8 @@ def _process_debts(
     for debt in state.financial.debts:
         updated = debt
         if debt.balance > Decimal(0) and debt.interest_rate > Decimal(0):
-            weekly_interest = _money(debt.balance * debt.interest_rate / Decimal(52))
-            updated = replace(updated, balance=_money(updated.balance + weekly_interest))
+            weekly_interest = money(debt.balance * debt.interest_rate / Decimal(52))
+            updated = replace(updated, balance=money(updated.balance + weekly_interest))
             entries.append(
                 CashflowEntry(
                     entry_id=f"debt-interest:{debt.name}:{context.week}",
@@ -360,7 +453,7 @@ def _process_debts(
             missed = paid_amount < amount
             updated = replace(
                 updated,
-                balance=_money(updated.balance - paid_amount),
+                balance=money(updated.balance - paid_amount),
                 consecutive_missed_payments=(
                     updated.consecutive_missed_payments + 1 if missed else 0
                 ),
@@ -384,12 +477,18 @@ def _pay_obligation(
     kind: str,
 ) -> tuple[AgentState, CashflowEntry, tuple[RoutineEffectApplication, ...]]:
     financial, paid, transfers = _fund_payment(state.financial, amount)
-    unpaid = _money(amount - paid)
+    unpaid = money(amount - paid)
     arrear_balance = None
     effects: tuple[RoutineEffectApplication, ...] = ()
     if unpaid > Decimal(0):
-        financial = _upsert_arrear(financial, obligation_id, category, unpaid, context.week)
-        arrear = _find_arrear(financial, obligation_id)
+        financial = upsert_arrear(
+            financial,
+            obligation_id=obligation_id,
+            category=category,
+            unpaid=unpaid,
+            week=context.week,
+        )
+        arrear = find_arrear(financial, obligation_id)
         arrear_balance = arrear.balance if arrear is not None else unpaid
     next_state = replace(state, financial=financial)
     if unpaid > Decimal(0):
@@ -414,26 +513,8 @@ def _fund_payment(
     amount: Decimal,
     funding_order: tuple[str, ...] = FUNDING_ORDER,
 ) -> tuple[FinancialState, Decimal, tuple[FundingTransfer, ...]]:
-    remaining = amount
-    paid = Decimal("0.00")
-    transfers: list[FundingTransfer] = []
-    values = {source: getattr(financial, source) for source in funding_order}
-    for source in funding_order:
-        if remaining <= Decimal(0):
-            break
-        available = values[source]
-        used = min(available, remaining)
-        if used <= Decimal(0):
-            continue
-        values[source] = _money(available - used)
-        remaining = _money(remaining - used)
-        paid = _money(paid + used)
-        transfers.append(FundingTransfer(source=source, amount=used))
-    return (
-        replace(financial, **values),
-        paid,
-        tuple(transfers),
-    )
+    settlement = settle_liquid_amount(financial, amount, funding_order)
+    return settlement.financial, settlement.amount_paid, _funding_transfers(settlement.transfers)
 
 
 def _apply_routine_spending(
@@ -445,17 +526,17 @@ def _apply_routine_spending(
     entries: list[CashflowEntry] = []
     effects: list[RoutineEffectApplication] = []
     minimum_food = min(profile.minimum_food_budget, profile.food_budget)
-    optional_food = _money(profile.food_budget - minimum_food)
+    optional_food = money(profile.food_budget - minimum_food)
     financial, minimum_paid, minimum_transfers = _fund_payment(next_state.financial, minimum_food)
     financial, optional_paid, optional_transfers = _fund_payment(
         financial,
         optional_food,
         ROUTINE_OPTIONAL_FUNDING_ORDER,
     )
-    paid = _money(minimum_paid + optional_paid)
+    paid = money(minimum_paid + optional_paid)
     transfers = minimum_transfers + optional_transfers
     next_state = replace(next_state, financial=financial)
-    minimum_shortfall = max(Decimal("0.00"), _money(minimum_food - minimum_paid))
+    minimum_shortfall = max(Decimal("0.00"), money(minimum_food - minimum_paid))
     if minimum_shortfall > Decimal(0):
         next_state, effect = _bounded_replace(
             next_state,
@@ -579,10 +660,12 @@ def _bounded_replace(
     section_name, field_name = path.split(".", 1)
     section = getattr(state, section_name)
     before = getattr(section, field_name)
-    raw_after = before + delta
-    if path == "health.sleep_debt":
+    if path == "health.sleep_debt" or path == "needs.food_security":
+        raw_after = before + delta
         after = max(0.0, raw_after)
     else:
+        effective_delta = _boundary_sensitive_delta(before, delta)
+        raw_after = before + effective_delta
         after = min(100.0, max(0.0, raw_after))
     clamped = after != raw_after
     next_state = replace(state, **{section_name: replace(section, **{field_name: after})})
@@ -595,6 +678,18 @@ def _bounded_replace(
         reason=reason,
         source=source,
     )
+
+
+def _boundary_sensitive_delta(before: float, delta: float) -> float:
+    """Dampen ordinary recurring effects as bounded state approaches 0 or 100."""
+
+    if delta > 0.0:
+        distance = max(0.0, 100.0 - before)
+    elif delta < 0.0:
+        distance = max(0.0, before)
+    else:
+        return 0.0
+    return delta * distance / (distance + 120.0)
 
 
 def _apply_unpaid_pressure(
@@ -634,49 +729,6 @@ def _apply_unpaid_pressure(
         )
         effects.append(effect)
     return next_state, tuple(effects)
-
-
-def _upsert_arrear(
-    financial: FinancialState,
-    obligation_id: str,
-    category: str,
-    unpaid: Decimal,
-    week: int,
-) -> FinancialState:
-    output: list[Arrear] = []
-    found = False
-    for arrear in financial.arrears:
-        if arrear.obligation_id == obligation_id:
-            output.append(
-                replace(
-                    arrear,
-                    balance=_money(arrear.balance + unpaid),
-                    last_updated_week=week,
-                    missed_occurrences=arrear.missed_occurrences + 1,
-                )
-            )
-            found = True
-        else:
-            output.append(arrear)
-    if not found:
-        output.append(
-            Arrear(
-                obligation_id=obligation_id,
-                category=category,
-                balance=unpaid,
-                first_missed_week=week,
-                last_updated_week=week,
-                missed_occurrences=1,
-            )
-        )
-    return replace(financial, arrears=tuple(output))
-
-
-def _find_arrear(financial: FinancialState, obligation_id: str) -> Arrear | None:
-    for arrear in financial.arrears:
-        if arrear.obligation_id == obligation_id:
-            return arrear
-    return None
 
 
 def _income_arrives(
@@ -720,5 +772,5 @@ def _due_date(cadence: str, due_day: int, week_start: date, week_end: date) -> d
     return None
 
 
-def _money(value: Decimal) -> Decimal:
-    return value.quantize(CENT, rounding=ROUND_HALF_UP)
+def _funding_transfers(transfers) -> tuple[FundingTransfer, ...]:
+    return tuple(FundingTransfer(source=transfer.source, amount=transfer.amount) for transfer in transfers)

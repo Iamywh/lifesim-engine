@@ -7,6 +7,7 @@ from typing import Any
 
 from lifesim.agents.state import SerializableState
 from lifesim.events.model import EventCatalog, EventCondition
+from lifesim.finance import MANDATORY_FUNDING_ORDER, MONEY_ACCOUNTS, SettlementTransfer
 
 MONEY_PATHS = frozenset(
     {
@@ -39,6 +40,7 @@ BOUNDED_FLOAT_PATHS = frozenset(
 )
 NONNEGATIVE_FLOAT_PATHS = frozenset({"health.sleep_debt"})
 WRITABLE_PATHS = MONEY_PATHS | BOUNDED_FLOAT_PATHS | NONNEGATIVE_FLOAT_PATHS
+CHARGE_SHORTFALL_POLICIES = frozenset({"require_full", "arrear"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,10 +69,41 @@ class StateEffectDefinition(SerializableState):
 
 
 @dataclass(frozen=True, slots=True)
+class FinancialChargeDefinition(SerializableState):
+    amount: Decimal
+    category: str
+    delay_weeks: int = 0
+    shortfall_policy: str = "require_full"
+    funding_order: tuple[str, ...] = MANDATORY_FUNDING_ORDER
+    conditions: tuple[EventCondition, ...] = ()
+
+    def __post_init__(self) -> None:
+        _money(self.amount, "amount")
+        _require_non_empty(self.category, "category")
+        _integer(self.delay_weeks, "delay_weeks", minimum=0)
+        if self.shortfall_policy not in CHARGE_SHORTFALL_POLICIES:
+            raise ValueError("Expected shortfall_policy to be 'require_full' or 'arrear'.")
+        funding_order = _string_sequence(self.funding_order, "funding_order")
+        if not funding_order:
+            raise ValueError("Expected funding_order to contain at least one account.")
+        for account in funding_order:
+            if account not in MONEY_ACCOUNTS:
+                raise ValueError(f"Unsupported funding account '{account}'.")
+        _require_unique(funding_order, "funding_order")
+        object.__setattr__(self, "funding_order", funding_order)
+        object.__setattr__(
+            self,
+            "conditions",
+            _typed_tuple(self.conditions, EventCondition, "conditions"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class OutcomeDefinition(SerializableState):
     outcome_id: str
     weight: float
     effects: tuple[StateEffectDefinition, ...] = ()
+    financial_charges: tuple[FinancialChargeDefinition, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.outcome_id, "outcome_id")
@@ -86,6 +119,11 @@ class OutcomeDefinition(SerializableState):
             "effects",
             _typed_tuple(self.effects, StateEffectDefinition, "effects"),
         )
+        object.__setattr__(
+            self,
+            "financial_charges",
+            _typed_tuple(self.financial_charges, FinancialChargeDefinition, "financial_charges"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +133,7 @@ class OptionConsequenceDefinition(SerializableState):
     option_id: str
     effects: tuple[StateEffectDefinition, ...] = ()
     outcomes: tuple[OutcomeDefinition, ...] = ()
+    financial_charges: tuple[FinancialChargeDefinition, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.event_id, "event_id")
@@ -104,6 +143,11 @@ class OptionConsequenceDefinition(SerializableState):
             self,
             "effects",
             _typed_tuple(self.effects, StateEffectDefinition, "effects"),
+        )
+        object.__setattr__(
+            self,
+            "financial_charges",
+            _typed_tuple(self.financial_charges, FinancialChargeDefinition, "financial_charges"),
         )
         outcomes = _typed_tuple(self.outcomes, OutcomeDefinition, "outcomes")
         _require_unique(tuple(outcome.outcome_id for outcome in outcomes), "outcome_id")
@@ -176,6 +220,38 @@ class ScheduledEffect(SerializableState):
 
 
 @dataclass(frozen=True, slots=True)
+class ScheduledFinancialCharge(SerializableState):
+    scheduled_charge_id: str
+    source_decision_id: str
+    source_consequence_id: str
+    source_event_id: str
+    source_event_version: str
+    chosen_option_id: str
+    source_outcome_id: str | None
+    created_week: int
+    due_week: int
+    charge: FinancialChargeDefinition
+
+    def __post_init__(self) -> None:
+        _require_non_empty(self.scheduled_charge_id, "scheduled_charge_id")
+        _require_non_empty(self.source_decision_id, "source_decision_id")
+        _require_non_empty(self.source_consequence_id, "source_consequence_id")
+        _require_non_empty(self.source_event_id, "source_event_id")
+        _require_non_empty(self.source_event_version, "source_event_version")
+        _require_non_empty(self.chosen_option_id, "chosen_option_id")
+        if self.source_outcome_id is not None:
+            _require_non_empty(self.source_outcome_id, "source_outcome_id")
+        _integer(self.created_week, "created_week", minimum=0)
+        _integer(self.due_week, "due_week", minimum=0)
+        if not isinstance(self.charge, FinancialChargeDefinition):
+            raise TypeError("Expected scheduled charge to contain FinancialChargeDefinition.")
+        if self.charge.delay_weeks <= 0:
+            raise ValueError("Scheduled financial charges must contain a charge with delay_weeks > 0.")
+        if self.due_week != self.created_week + self.charge.delay_weeks:
+            raise ValueError("Expected due_week to equal created_week + charge.delay_weeks.")
+
+
+@dataclass(frozen=True, slots=True)
 class EffectApplication(SerializableState):
     path: str
     requested_delta: Decimal | float
@@ -234,6 +310,67 @@ class EffectApplication(SerializableState):
 
 
 @dataclass(frozen=True, slots=True)
+class FinancialChargeApplication(SerializableState):
+    amount_due: Decimal
+    amount_paid: Decimal
+    amount_unpaid: Decimal
+    category: str
+    shortfall_policy: str
+    funding_order: tuple[str, ...]
+    funding: tuple[SettlementTransfer, ...] = ()
+    fully_paid: bool = False
+    arrear_created: bool = False
+    arrear_obligation_id: str = ""
+    arrear_balance_after: Decimal | None = None
+    skipped: bool = False
+    skip_reason: str = ""
+    scheduled_charge_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _money(self.amount_due, "amount_due")
+        _money(self.amount_paid, "amount_paid")
+        _money(self.amount_unpaid, "amount_unpaid")
+        _require_non_empty(self.category, "category")
+        if self.shortfall_policy not in CHARGE_SHORTFALL_POLICIES:
+            raise ValueError("Expected shortfall_policy to be 'require_full' or 'arrear'.")
+        object.__setattr__(self, "funding_order", _string_sequence(self.funding_order, "funding_order"))
+        object.__setattr__(
+            self,
+            "funding",
+            _typed_tuple(self.funding, SettlementTransfer, "funding"),
+        )
+        total_funding = sum((transfer.amount for transfer in self.funding), Decimal("0.00"))
+        if total_funding != self.amount_paid:
+            raise ValueError("Expected funding transfer total to match amount_paid.")
+        if not isinstance(self.fully_paid, bool):
+            raise TypeError("Expected fully_paid to be bool.")
+        if self.fully_paid != (self.amount_unpaid == Decimal("0.00")):
+            raise ValueError("Expected fully_paid to reflect amount_unpaid.")
+        if not isinstance(self.arrear_created, bool):
+            raise TypeError("Expected arrear_created to be bool.")
+        if self.arrear_created:
+            _require_non_empty(self.arrear_obligation_id, "arrear_obligation_id")
+            if self.arrear_balance_after is None:
+                raise ValueError("Expected arrear_balance_after when arrear_created is true.")
+        elif self.arrear_obligation_id:
+            raise ValueError("Expected arrear_obligation_id only when arrear_created is true.")
+        if self.arrear_balance_after is not None:
+            _money(self.arrear_balance_after, "arrear_balance_after")
+        if not isinstance(self.skipped, bool):
+            raise TypeError("Expected skipped to be bool.")
+        if self.skipped:
+            if self.amount_paid != Decimal("0.00") or self.amount_unpaid != Decimal("0.00"):
+                raise ValueError("Skipped charges must not include paid or unpaid amounts.")
+            _require_non_empty(self.skip_reason, "skip_reason")
+        elif self.skip_reason:
+            raise ValueError("Applied charges must not include a skip_reason.")
+        elif self.amount_paid + self.amount_unpaid != self.amount_due:
+            raise ValueError("Expected amount_paid + amount_unpaid to equal amount_due.")
+        if self.scheduled_charge_id is not None:
+            _require_non_empty(self.scheduled_charge_id, "scheduled_charge_id")
+
+
+@dataclass(frozen=True, slots=True)
 class ConsequenceRecord(SerializableState):
     consequence_id: str
     source_decision_id: str
@@ -245,8 +382,11 @@ class ConsequenceRecord(SerializableState):
     outcome_roll: float | None = None
     outcome_total_weight: float | None = None
     source_scheduled_effect_id: str | None = None
+    source_scheduled_charge_id: str | None = None
     effect_applications: tuple[EffectApplication, ...] = ()
+    financial_charge_applications: tuple[FinancialChargeApplication, ...] = ()
     scheduled_effects_created: tuple[ScheduledEffect, ...] = ()
+    scheduled_financial_charges_created: tuple[ScheduledFinancialCharge, ...] = ()
 
     def __post_init__(self) -> None:
         _require_non_empty(self.consequence_id, "consequence_id")
@@ -260,6 +400,8 @@ class ConsequenceRecord(SerializableState):
         self._validate_outcome_audit()
         if self.source_scheduled_effect_id is not None:
             _require_non_empty(self.source_scheduled_effect_id, "source_scheduled_effect_id")
+        if self.source_scheduled_charge_id is not None:
+            _require_non_empty(self.source_scheduled_charge_id, "source_scheduled_charge_id")
         object.__setattr__(
             self,
             "effect_applications",
@@ -267,8 +409,26 @@ class ConsequenceRecord(SerializableState):
         )
         object.__setattr__(
             self,
+            "financial_charge_applications",
+            _typed_tuple(
+                self.financial_charge_applications,
+                FinancialChargeApplication,
+                "financial_charge_applications",
+            ),
+        )
+        object.__setattr__(
+            self,
             "scheduled_effects_created",
             _typed_tuple(self.scheduled_effects_created, ScheduledEffect, "scheduled_effects_created"),
+        )
+        object.__setattr__(
+            self,
+            "scheduled_financial_charges_created",
+            _typed_tuple(
+                self.scheduled_financial_charges_created,
+                ScheduledFinancialCharge,
+                "scheduled_financial_charges_created",
+            ),
         )
 
     def _validate_outcome_audit(self) -> None:
@@ -311,6 +471,7 @@ class ConsequenceRuntimeState:
     history: ConsequenceHistory = field(default_factory=ConsequenceHistory)
     pending_scheduled_effects: tuple[ScheduledEffect, ...] = ()
     processed_decision_ids: tuple[str, ...] = ()
+    pending_scheduled_financial_charges: tuple[ScheduledFinancialCharge, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.history, ConsequenceHistory):
@@ -325,6 +486,16 @@ class ConsequenceRuntimeState:
             "scheduled_effect_id",
         )
         object.__setattr__(self, "pending_scheduled_effects", pending)
+        pending_charges = _typed_tuple(
+            self.pending_scheduled_financial_charges,
+            ScheduledFinancialCharge,
+            "pending_scheduled_financial_charges",
+        )
+        _require_unique(
+            tuple(charge.scheduled_charge_id for charge in pending_charges),
+            "scheduled_charge_id",
+        )
+        object.__setattr__(self, "pending_scheduled_financial_charges", pending_charges)
         processed = _string_sequence(self.processed_decision_ids, "processed_decision_ids")
         _require_unique(processed, "processed_decision_ids")
         object.__setattr__(self, "processed_decision_ids", processed)
@@ -335,6 +506,9 @@ class ConsequenceRuntimeState:
             "pending_scheduled_effects": [
                 effect.to_dict() for effect in self.pending_scheduled_effects
             ],
+            "pending_scheduled_financial_charges": [
+                charge.to_dict() for charge in self.pending_scheduled_financial_charges
+            ],
             "processed_decision_ids": list(self.processed_decision_ids),
         }
 
@@ -343,18 +517,33 @@ def validate_consequence_catalog(
     consequence_catalog: ConsequenceCatalog,
     event_catalog: EventCatalog,
 ) -> None:
-    valid_keys = {
-        (event.event_id, event.version, option.option_id)
+    valid_options = {
+        (event.event_id, event.version, option.option_id): option
         for event in event_catalog.definitions
         for option in event.options
     }
     for definition in consequence_catalog.definitions:
-        if definition.key not in valid_keys:
+        option = valid_options.get(definition.key)
+        if option is None:
             event_id, version, option_id = definition.key
             raise ValueError(
                 "Consequence definition references unknown event/version/option "
                 f"'{event_id}/{version}/{option_id}'."
             )
+        if option.requires_full_estimated_cost:
+            immediate_charge_total = sum(
+                (
+                    charge.amount
+                    for charge in definition.financial_charges
+                    if charge.delay_weeks == 0
+                ),
+                Decimal("0.00"),
+            )
+            if immediate_charge_total > option.estimated_cost:
+                raise ValueError(
+                    "Immediate financial charges must not exceed estimated_cost "
+                    f"for '{definition.event_id}/{definition.event_version}/{definition.option_id}'."
+                )
 
 
 def _finite_number(
@@ -381,6 +570,14 @@ def _integer(value: Any, name: str, *, minimum: int | None = None) -> int:
         raise TypeError(f"Expected '{name}' to be an integer.")
     if minimum is not None and value < minimum:
         raise ValueError(f"Expected '{name}' to be >= {minimum}.")
+    return value
+
+
+def _money(value: Any, name: str) -> Decimal:
+    if not isinstance(value, Decimal):
+        raise TypeError(f"Expected '{name}' to be Decimal.")
+    if not value.is_finite() or value < Decimal("0.00"):
+        raise ValueError(f"Expected '{name}' to be finite and non-negative.")
     return value
 
 

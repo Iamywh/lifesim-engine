@@ -2,6 +2,8 @@
 
 from lifesim.passive.catalog import load_routine_catalog, parse_routine_catalog
 from lifesim.passive.engine import (
+    ArrearSettlementEngine,
+    ArrearSettlementTransition,
     PassiveCashflowEngine,
     PassiveCashflowTransition,
     RoutineEngine,
@@ -9,6 +11,7 @@ from lifesim.passive.engine import (
     RoutinePlanningTransition,
 )
 from lifesim.passive.model import (
+    ArrearSettlementRecord,
     CashflowEntry,
     CashflowRecord,
     FundingTransfer,
@@ -21,6 +24,9 @@ from lifesim.passive.model import (
 )
 
 __all__ = [
+    "ArrearSettlementEngine",
+    "ArrearSettlementRecord",
+    "ArrearSettlementTransition",
     "CashflowEntry",
     "CashflowRecord",
     "FundingTransfer",

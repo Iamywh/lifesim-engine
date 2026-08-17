@@ -22,6 +22,7 @@ from lifesim.consequences import (
     ConsequenceRuntimeState,
     DecisionConsequenceTransition,
     EffectApplication,
+    FinancialChargeDefinition,
     OptionConsequenceDefinition,
     OutcomeDefinition,
     ScheduledConsequenceTransition,
@@ -65,7 +66,7 @@ def test_consequence_catalog_loading_and_reference_validation() -> None:
     events = load_event_catalog(STARTER_EVENTS)
     catalog = load_consequence_catalog(STARTER_CONSEQUENCES, event_catalog=events)
 
-    assert len(catalog.definitions) == 10
+    assert len(catalog.definitions) == 24
     assert catalog.find(
         event_id="social_invitation",
         event_version="1",
@@ -105,6 +106,169 @@ def test_invalid_catalog_data_references_and_duplicate_keys_fail_fast() -> None:
                 consequence_definition(option_id="known"),
             )
         )
+
+
+def test_financial_charge_decimal_serialization_and_estimated_cost_alignment() -> None:
+    event = event_definition(
+        options=(
+            EventOption(
+                option_id="chosen",
+                label="Chosen",
+                summary="Chosen option.",
+                estimated_cost=Decimal("10.00"),
+            ),
+        )
+    )
+    catalog = parse_consequence_catalog(
+        {
+            "consequences": [
+                {
+                    "event_id": "choice_event",
+                    "event_version": "1",
+                    "option_id": "chosen",
+                    "financial_charges": [
+                        {
+                            "amount": "9.50",
+                            "category": "test",
+                            "funding_order": ["bank_balance", "cash"],
+                        }
+                    ],
+                }
+            ]
+        },
+        event_catalog=EventCatalog((event,), event_probability=1.0),
+    )
+
+    charge = catalog.definitions[0].financial_charges[0]
+
+    assert charge.amount == Decimal("9.50")
+    assert charge.to_dict()["amount"] == "9.50"
+
+    with pytest.raises(ValueError, match="estimated_cost"):
+        parse_consequence_catalog(
+            {
+                "consequences": [
+                    {
+                        "event_id": "choice_event",
+                        "event_version": "1",
+                        "option_id": "chosen",
+                        "financial_charges": [
+                            {"amount": "10.01", "category": "test"},
+                        ],
+                    }
+                ]
+            },
+            event_catalog=EventCatalog((event,), event_probability=1.0),
+        )
+
+
+def test_financial_charge_uses_explicit_funding_order_exactly() -> None:
+    maya = with_financial(
+        bank=Decimal("3.00"),
+        cash=Decimal("2.00"),
+        savings=Decimal("20.00"),
+        emergency=Decimal("5.00"),
+    )
+    engine = ConsequenceEngine(
+        ConsequenceCatalog(
+            (
+                consequence_definition(
+                    financial_charges=(
+                        FinancialChargeDefinition(
+                            amount=Decimal("7.00"),
+                            category="test",
+                        ),
+                    ),
+                    effects=(),
+                ),
+            )
+        )
+    )
+
+    next_state, _, records = engine.resolve_decisions(
+        maya,
+        context(),
+        (occurrence(),),
+        (decision_record(),),
+        ConsequenceRuntimeState(),
+    )
+    application = records[0].financial_charge_applications[0]
+
+    assert application.amount_paid == Decimal("7.00")
+    assert application.to_dict()["amount_paid"] == "7.00"
+    assert [transfer.source for transfer in application.funding] == [
+        "bank_balance",
+        "cash",
+        "savings",
+    ]
+    assert next_state.financial.bank_balance == Decimal("0.00")
+    assert next_state.financial.cash == Decimal("0.00")
+    assert next_state.financial.savings == Decimal("18.00")
+    assert next_state.financial.emergency_fund == Decimal("5.00")
+
+
+def test_require_full_financial_charge_fails_without_mutating_state() -> None:
+    maya = with_financial(bank=Decimal("1.00"), cash=Decimal("0.00"), savings=Decimal("0.00"), emergency=Decimal("0.00"))
+    engine = ConsequenceEngine(
+        ConsequenceCatalog(
+            (
+                consequence_definition(
+                    financial_charges=(
+                        FinancialChargeDefinition(amount=Decimal("2.00"), category="test"),
+                    ),
+                    effects=(),
+                ),
+            )
+        )
+    )
+
+    with pytest.raises(ConsequenceApplicationError, match="requires full payment"):
+        engine.resolve_decisions(
+            maya,
+            context(),
+            (occurrence(),),
+            (decision_record(),),
+            ConsequenceRuntimeState(),
+        )
+    assert maya.financial.bank_balance == Decimal("1.00")
+
+
+def test_scheduled_financial_charge_executes_once_and_can_create_arrear() -> None:
+    maya = with_financial(bank=Decimal("3.00"), cash=Decimal("0.00"), savings=Decimal("0.00"), emergency=Decimal("0.00"))
+    charge = FinancialChargeDefinition(
+        amount=Decimal("10.00"),
+        category="test",
+        delay_weeks=1,
+        shortfall_policy="arrear",
+    )
+    engine = ConsequenceEngine(
+        ConsequenceCatalog(
+            (
+                consequence_definition(financial_charges=(charge,), effects=()),
+            )
+        )
+    )
+    _, runtime, records = engine.resolve_decisions(
+        maya,
+        context(week=1),
+        (occurrence(week=1),),
+        (decision_record(week=1),),
+        ConsequenceRuntimeState(),
+    )
+    assert len(records[0].scheduled_financial_charges_created) == 1
+
+    next_state, runtime, due_records = engine.apply_due_scheduled_effects(
+        maya,
+        context(week=2),
+        runtime,
+    )
+
+    assert runtime.pending_scheduled_financial_charges == ()
+    assert due_records[0].source_scheduled_charge_id
+    application = due_records[0].financial_charge_applications[0]
+    assert application.amount_paid == Decimal("3.00")
+    assert application.amount_unpaid == Decimal("7.00")
+    assert next_state.financial.arrears[0].balance == Decimal("7.00")
 
 
 def test_inconsistent_scheduled_effect_timing_is_rejected() -> None:
@@ -935,6 +1099,30 @@ def evaluation(option_id: str) -> OptionEvaluation:
     )
 
 
+def with_financial(
+    *,
+    bank: Decimal,
+    cash: Decimal,
+    savings: Decimal = Decimal("0.00"),
+    emergency: Decimal = Decimal("0.00"),
+) -> AgentState:
+    maya = load_agent_state(MAYA_SCENARIO)
+    return replace(
+        maya,
+        financial=replace(
+            maya.financial,
+            bank_balance=bank,
+            cash=cash,
+            savings=savings,
+            emergency_fund=emergency,
+            income_streams=(),
+            recurring_commitments=(),
+            debts=(),
+            arrears=(),
+        ),
+    )
+
+
 def consequence_definition(
     *,
     event_id: str = "choice_event",
@@ -943,6 +1131,7 @@ def consequence_definition(
         StateEffectDefinition(path="mental.stress", delta=1.0),
     ),
     outcomes: tuple[OutcomeDefinition, ...] = (),
+    financial_charges: tuple[FinancialChargeDefinition, ...] = (),
 ) -> OptionConsequenceDefinition:
     return OptionConsequenceDefinition(
         event_id=event_id,
@@ -950,6 +1139,7 @@ def consequence_definition(
         option_id=option_id,
         effects=effects,
         outcomes=outcomes,
+        financial_charges=financial_charges,
     )
 
 

@@ -170,6 +170,20 @@ class CashflowRecord(SerializableState):
 
 
 @dataclass(frozen=True, slots=True)
+class ArrearSettlementRecord(SerializableState):
+    week: int
+    entries: tuple[CashflowEntry, ...] = ()
+
+    def __post_init__(self) -> None:
+        _integer(self.week, "week", minimum=1)
+        object.__setattr__(self, "entries", tuple(self.entries))
+        for entry in self.entries:
+            if not isinstance(entry, CashflowEntry):
+                raise TypeError("Expected arrear settlement entries to contain CashflowEntry values.")
+        _require_unique(tuple(entry.entry_id for entry in self.entries), "arrear settlement entry_id")
+
+
+@dataclass(frozen=True, slots=True)
 class RoutineEffectApplication(SerializableState):
     path: str
     before: Decimal | float
@@ -234,29 +248,56 @@ class RoutineWeekRecord(SerializableState):
 class PassiveLifeHistory:
     cashflow_records: tuple[CashflowRecord, ...] = ()
     routine_records: tuple[RoutineWeekRecord, ...] = ()
+    arrear_settlement_records: tuple[ArrearSettlementRecord, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cashflow_records", tuple(self.cashflow_records))
         object.__setattr__(self, "routine_records", tuple(self.routine_records))
+        object.__setattr__(self, "arrear_settlement_records", tuple(self.arrear_settlement_records))
         for record in self.cashflow_records:
             if not isinstance(record, CashflowRecord):
                 raise TypeError("Expected cashflow history to contain CashflowRecord values.")
         for record in self.routine_records:
             if not isinstance(record, RoutineWeekRecord):
                 raise TypeError("Expected routine history to contain RoutineWeekRecord values.")
+        for record in self.arrear_settlement_records:
+            if not isinstance(record, ArrearSettlementRecord):
+                raise TypeError("Expected arrear settlement history to contain ArrearSettlementRecord values.")
         _require_unique(tuple(str(record.week) for record in self.cashflow_records), "cashflow week")
         _require_unique(tuple(str(record.week) for record in self.routine_records), "routine week")
+        _require_unique(
+            tuple(str(record.week) for record in self.arrear_settlement_records),
+            "arrear settlement week",
+        )
 
     def record_cashflow(self, record: CashflowRecord) -> PassiveLifeHistory:
-        return PassiveLifeHistory(self.cashflow_records + (record,), self.routine_records)
+        return PassiveLifeHistory(
+            self.cashflow_records + (record,),
+            self.routine_records,
+            self.arrear_settlement_records,
+        )
 
     def record_routine(self, record: RoutineWeekRecord) -> PassiveLifeHistory:
-        return PassiveLifeHistory(self.cashflow_records, self.routine_records + (record,))
+        return PassiveLifeHistory(
+            self.cashflow_records,
+            self.routine_records + (record,),
+            self.arrear_settlement_records,
+        )
+
+    def record_arrear_settlement(self, record: ArrearSettlementRecord) -> PassiveLifeHistory:
+        return PassiveLifeHistory(
+            self.cashflow_records,
+            self.routine_records,
+            self.arrear_settlement_records + (record,),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "cashflow_records": [record.to_dict() for record in self.cashflow_records],
             "routine_records": [record.to_dict() for record in self.routine_records],
+            "arrear_settlement_records": [
+                record.to_dict() for record in self.arrear_settlement_records
+            ],
         }
 
 
@@ -269,6 +310,7 @@ class PassiveLifeRuntimeState:
     processed_cashflow_weeks: tuple[int, ...] = ()
     processed_routine_planning_weeks: tuple[int, ...] = ()
     processed_routine_execution_weeks: tuple[int, ...] = ()
+    processed_arrear_settlement_weeks: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.history, PassiveLifeHistory):
@@ -283,6 +325,7 @@ class PassiveLifeRuntimeState:
             "processed_cashflow_weeks",
             "processed_routine_planning_weeks",
             "processed_routine_execution_weeks",
+            "processed_arrear_settlement_weeks",
         ):
             weeks = _integer_sequence(getattr(self, name), name)
             _require_unique(tuple(str(week) for week in weeks), name)
@@ -295,10 +338,13 @@ class PassiveLifeRuntimeState:
             raise ValueError("Expected planned routine week to match planned routine decision presence.")
         history_cashflow_weeks = tuple(record.week for record in self.history.cashflow_records)
         history_routine_weeks = tuple(record.week for record in self.history.routine_records)
-        if set(history_cashflow_weeks) != set(self.processed_cashflow_weeks):
+        history_arrear_settlement_weeks = tuple(record.week for record in self.history.arrear_settlement_records)
+        if history_cashflow_weeks != self.processed_cashflow_weeks:
             raise ValueError("Expected processed cashflow weeks to exactly match cashflow history.")
-        if set(history_routine_weeks) != set(self.processed_routine_execution_weeks):
+        if history_routine_weeks != self.processed_routine_execution_weeks:
             raise ValueError("Expected processed routine execution weeks to exactly match routine history.")
+        if history_arrear_settlement_weeks != self.processed_arrear_settlement_weeks:
+            raise ValueError("Expected processed arrear settlement weeks to exactly match arrear settlement history.")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -313,6 +359,7 @@ class PassiveLifeRuntimeState:
             "processed_cashflow_weeks": list(self.processed_cashflow_weeks),
             "processed_routine_planning_weeks": list(self.processed_routine_planning_weeks),
             "processed_routine_execution_weeks": list(self.processed_routine_execution_weeks),
+            "processed_arrear_settlement_weeks": list(self.processed_arrear_settlement_weeks),
         }
 
 

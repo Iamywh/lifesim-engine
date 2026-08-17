@@ -4,53 +4,10 @@ import argparse
 import json
 from pathlib import Path
 
-from lifesim.adaptation.catalog import load_adaptation_catalog
-from lifesim.adaptation.engine import AdaptationEngine, AdaptationTransition
 from lifesim.agents.scenario import load_agent_state
+from lifesim.canonical import build_canonical_transitions
 from lifesim.config import load_config
-from lifesim.consequences.catalog import load_consequence_catalog
-from lifesim.consequences.engine import (
-    ConsequenceEngine,
-    DecisionConsequenceTransition,
-    ScheduledConsequenceTransition,
-)
-from lifesim.decisions.engine import DecisionEngine, DecisionEngineTransition
-from lifesim.development.catalog import load_development_catalog
-from lifesim.development.engine import (
-    DevelopmentEngine,
-    DevelopmentExecutionTransition,
-    DevelopmentPlanningTransition,
-)
-from lifesim.employment.catalog import load_employment_catalog
-from lifesim.employment.engine import (
-    EmploymentBoundaryEngine,
-    EmploymentBoundaryTransition,
-    EmploymentDecisionTransition,
-    EmploymentMarketEngine,
-    EmploymentMarketTransition,
-    EmploymentProcessEngine,
-    EmploymentWorkEngine,
-    EmploymentWorkTransition,
-)
 from lifesim.engine import LifeSimEngine
-from lifesim.events.catalog import load_event_catalog
-from lifesim.events.engine import EventEngine, EventEngineTransition
-from lifesim.learning.engine import LearningEngine, LearningTransition
-from lifesim.passive.catalog import load_routine_catalog
-from lifesim.passive.engine import (
-    PassiveCashflowEngine,
-    PassiveCashflowTransition,
-    RoutineEngine,
-    RoutineExecutionTransition,
-    RoutinePlanningTransition,
-)
-from lifesim.social.catalog import load_social_catalog
-from lifesim.social.engine import (
-    SocialEngine,
-    SocialExecutionTransition,
-    SocialMaintenanceTransition,
-    SocialPlanningTransition,
-)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -118,46 +75,14 @@ def main() -> None:
     transitions = ()
     if args.agent_scenario is not None:
         initial_agent = load_agent_state(args.agent_scenario)
-        event_catalog = load_event_catalog(args.event_catalog)
-        consequence_catalog = load_consequence_catalog(
-            args.consequence_catalog,
-            event_catalog=event_catalog,
-        )
-        consequence_engine = ConsequenceEngine(consequence_catalog)
-        learning_engine = LearningEngine()
-        routine_catalog = load_routine_catalog(args.routine_catalog)
-        routine_engine = RoutineEngine(routine_catalog)
-        employment_catalog = load_employment_catalog(args.employment_catalog)
-        development_engine = DevelopmentEngine(
-            load_development_catalog(args.development_catalog),
-            employment_catalog=employment_catalog,
-        )
-        social_engine = SocialEngine(
-            load_social_catalog(args.social_catalog),
-            routine_catalog=routine_catalog,
-        )
-        adaptation_engine = AdaptationEngine(load_adaptation_catalog(args.adaptation_catalog))
-        decision_engine = DecisionEngine()
-        transitions = (
-            ScheduledConsequenceTransition(consequence_engine),
-            LearningTransition(learning_engine),
-            EmploymentBoundaryTransition(EmploymentBoundaryEngine()),
-            PassiveCashflowTransition(PassiveCashflowEngine()),
-            SocialMaintenanceTransition(social_engine),
-            RoutinePlanningTransition(routine_engine, decision_engine),
-            DevelopmentPlanningTransition(development_engine),
-            SocialPlanningTransition(social_engine),
-            EmploymentMarketTransition(EmploymentMarketEngine(employment_catalog)),
-            EventEngineTransition(EventEngine(event_catalog)),
-            DecisionEngineTransition(decision_engine),
-            DecisionConsequenceTransition(consequence_engine),
-            EmploymentDecisionTransition(EmploymentProcessEngine(employment_catalog)),
-            LearningTransition(learning_engine),
-            EmploymentWorkTransition(EmploymentWorkEngine()),
-            DevelopmentExecutionTransition(development_engine),
-            SocialExecutionTransition(social_engine),
-            RoutineExecutionTransition(routine_engine),
-            AdaptationTransition(adaptation_engine),
+        transitions = build_canonical_transitions(
+            event_catalog_path=args.event_catalog,
+            consequence_catalog_path=args.consequence_catalog,
+            routine_catalog_path=args.routine_catalog,
+            employment_catalog_path=args.employment_catalog,
+            development_catalog_path=args.development_catalog,
+            social_catalog_path=args.social_catalog,
+            adaptation_catalog_path=args.adaptation_catalog,
         )
     result = LifeSimEngine(config, transitions=transitions).run(initial_agent=initial_agent)
     output = result.to_dict()

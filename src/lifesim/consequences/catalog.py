@@ -7,6 +7,7 @@ from typing import Any
 
 from lifesim.consequences.model import (
     ConsequenceCatalog,
+    FinancialChargeDefinition,
     OptionConsequenceDefinition,
     OutcomeDefinition,
     StateEffectDefinition,
@@ -14,6 +15,7 @@ from lifesim.consequences.model import (
 )
 from lifesim.events.catalog import _parse_condition
 from lifesim.events.model import EventCatalog
+from lifesim.finance import MANDATORY_FUNDING_ORDER
 
 
 def load_consequence_catalog(
@@ -54,6 +56,10 @@ def _parse_consequence(raw: dict[str, Any]) -> OptionConsequenceDefinition:
         option_id=raw["option_id"],
         effects=tuple(_parse_effect(effect) for effect in raw.get("effects", [])),
         outcomes=tuple(_parse_outcome(outcome) for outcome in raw.get("outcomes", [])),
+        financial_charges=tuple(
+            _parse_financial_charge(charge)
+            for charge in raw.get("financial_charges", [])
+        ),
     )
 
 
@@ -64,6 +70,10 @@ def _parse_outcome(raw: dict[str, Any]) -> OutcomeDefinition:
         outcome_id=raw["outcome_id"],
         weight=raw["weight"],
         effects=tuple(_parse_effect(effect) for effect in raw.get("effects", [])),
+        financial_charges=tuple(
+            _parse_financial_charge(charge)
+            for charge in raw.get("financial_charges", [])
+        ),
     )
 
 
@@ -88,3 +98,23 @@ def _parse_delta(value: Any, path: str) -> Decimal | float:
         except InvalidOperation as error:
             raise ValueError("Expected monetary consequence delta to be a decimal string.") from error
     return value
+
+
+def _parse_financial_charge(raw: dict[str, Any]) -> FinancialChargeDefinition:
+    if not isinstance(raw, dict):
+        raise TypeError("Expected each financial charge to be a table.")
+    amount = raw["amount"]
+    if not isinstance(amount, str):
+        raise TypeError("Expected financial charge amount to be a string.")
+    try:
+        parsed_amount = Decimal(amount)
+    except InvalidOperation as error:
+        raise ValueError("Expected financial charge amount to be a decimal string.") from error
+    return FinancialChargeDefinition(
+        amount=parsed_amount,
+        category=raw["category"],
+        delay_weeks=raw.get("delay_weeks", 0),
+        shortfall_policy=raw.get("shortfall_policy", "require_full"),
+        funding_order=tuple(raw.get("funding_order", MANDATORY_FUNDING_ORDER)),
+        conditions=tuple(_parse_condition(condition) for condition in raw.get("conditions", [])),
+    )

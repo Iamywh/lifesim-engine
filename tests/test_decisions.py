@@ -56,8 +56,9 @@ def test_event_option_toml_loading_and_decimal_serialization() -> None:
     option = catalog.definitions[0].options[1]
 
     assert option.option_id == "pay_for_faster_transport"
-    assert option.estimated_cost == Decimal("14.00")
-    assert option.to_dict()["estimated_cost"] == "14.00"
+    assert option.estimated_cost == Decimal("16.00")
+    assert option.to_dict()["estimated_cost"] == "16.00"
+    assert option.behavior_tags == ("paid_convenience",)
     assert catalog.definitions[0].time_pressure == 0.55
 
 

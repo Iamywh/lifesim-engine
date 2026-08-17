@@ -14,13 +14,17 @@ from lifesim.consequences.model import (
     ConsequenceRecord,
     ConsequenceRuntimeState,
     EffectApplication,
+    FinancialChargeApplication,
+    FinancialChargeDefinition,
     OptionConsequenceDefinition,
     OutcomeDefinition,
     ScheduledEffect,
+    ScheduledFinancialCharge,
     StateEffectDefinition,
 )
 from lifesim.decisions.model import DecisionRecord
 from lifesim.events.model import EventOccurrence
+from lifesim.finance import find_arrear, settle_liquid_amount, upsert_arrear
 from lifesim.rng import derive_stable_seed
 from lifesim.weekly import WeeklyContext, WeeklyTransitionResult
 
@@ -55,10 +59,20 @@ class ConsequenceEngine:
             for effect in runtime.pending_scheduled_effects
             if effect.due_week <= context.week
         )
+        due_charges = tuple(
+            charge
+            for charge in runtime.pending_scheduled_financial_charges
+            if charge.due_week <= context.week
+        )
         remaining = tuple(
             effect
             for effect in runtime.pending_scheduled_effects
             if effect.due_week > context.week
+        )
+        remaining_charges = tuple(
+            charge
+            for charge in runtime.pending_scheduled_financial_charges
+            if charge.due_week > context.week
         )
         next_state = state
         records: list[ConsequenceRecord] = []
@@ -80,10 +94,35 @@ class ConsequenceEngine:
                 effect_applications=(application,),
             )
             records.append(record)
+        for scheduled_charge in sorted(due_charges, key=lambda item: item.due_week):
+            next_state, application = _apply_financial_charge(
+                next_state,
+                context,
+                scheduled_charge.charge,
+                scheduled_charge,
+                0,
+            )
+            record = ConsequenceRecord(
+                consequence_id=_stable_id(
+                    "scheduled-charge",
+                    scheduled_charge.scheduled_charge_id,
+                    str(context.week),
+                ),
+                source_decision_id=scheduled_charge.source_decision_id,
+                source_event_id=scheduled_charge.source_event_id,
+                source_event_version=scheduled_charge.source_event_version,
+                chosen_option_id=scheduled_charge.chosen_option_id,
+                week_resolved=context.week,
+                selected_outcome_id=scheduled_charge.source_outcome_id,
+                source_scheduled_charge_id=scheduled_charge.scheduled_charge_id,
+                financial_charge_applications=(application,),
+            )
+            records.append(record)
         history = runtime.history.record(tuple(records))
         next_runtime = ConsequenceRuntimeState(
             history=history,
             pending_scheduled_effects=remaining,
+            pending_scheduled_financial_charges=remaining_charges,
             processed_decision_ids=runtime.processed_decision_ids,
         )
         return next_state, next_runtime, tuple(records)
@@ -99,6 +138,7 @@ class ConsequenceEngine:
         next_state = state
         records: list[ConsequenceRecord] = []
         pending = list(runtime.pending_scheduled_effects)
+        pending_charges = list(runtime.pending_scheduled_financial_charges)
         processed = list(runtime.processed_decision_ids)
 
         events_by_key = _events_by_key(events, context.week)
@@ -142,11 +182,13 @@ class ConsequenceEngine:
             )
             records.append(record)
             pending.extend(record.scheduled_effects_created)
+            pending_charges.extend(record.scheduled_financial_charges_created)
 
         history = runtime.history.record(tuple(records))
         next_runtime = ConsequenceRuntimeState(
             history=history,
             pending_scheduled_effects=tuple(pending),
+            pending_scheduled_financial_charges=tuple(pending_charges),
             processed_decision_ids=tuple(processed),
         )
         return next_state, next_runtime, tuple(records)
@@ -160,7 +202,9 @@ class ConsequenceEngine:
     ) -> tuple[AgentState, ConsequenceRecord]:
         outcome, roll, total_weight = self._select_outcome(state, context, decision, definition)
         outcome_effects = outcome.effects if outcome is not None else ()
+        outcome_charges = outcome.financial_charges if outcome is not None else ()
         effects = definition.effects + outcome_effects
+        financial_charges = definition.financial_charges + outcome_charges
         consequence_id = _stable_id(
             "consequence",
             decision.decision_id,
@@ -170,7 +214,15 @@ class ConsequenceEngine:
         )
         immediate = tuple(effect for effect in effects if effect.delay_weeks == 0)
         delayed = tuple(effect for effect in effects if effect.delay_weeks > 0)
-        next_state, applications = _apply_effects_atomically(state, context, immediate)
+        immediate_charges = tuple(charge for charge in financial_charges if charge.delay_weeks == 0)
+        delayed_charges = tuple(charge for charge in financial_charges if charge.delay_weeks > 0)
+        next_state, charge_applications = _apply_financial_charges_atomically(
+            state,
+            context,
+            immediate_charges,
+            consequence_id,
+        )
+        next_state, applications = _apply_effects_atomically(next_state, context, immediate)
         scheduled = tuple(
             ScheduledEffect(
                 scheduled_effect_id=_stable_id(
@@ -192,6 +244,27 @@ class ConsequenceEngine:
             )
             for index, effect in enumerate(delayed)
         )
+        scheduled_charges = tuple(
+            ScheduledFinancialCharge(
+                scheduled_charge_id=_stable_id(
+                    "scheduled-charge",
+                    consequence_id,
+                    str(index),
+                    str(context.week + charge.delay_weeks),
+                    charge.category,
+                ),
+                source_decision_id=decision.decision_id,
+                source_consequence_id=consequence_id,
+                source_event_id=definition.event_id,
+                source_event_version=definition.event_version,
+                chosen_option_id=definition.option_id,
+                source_outcome_id=outcome.outcome_id if outcome is not None else None,
+                created_week=context.week,
+                due_week=context.week + charge.delay_weeks,
+                charge=charge,
+            )
+            for index, charge in enumerate(delayed_charges)
+        )
         return next_state, ConsequenceRecord(
             consequence_id=consequence_id,
             source_decision_id=decision.decision_id,
@@ -203,7 +276,9 @@ class ConsequenceEngine:
             outcome_roll=roll,
             outcome_total_weight=total_weight,
             effect_applications=applications,
+            financial_charge_applications=charge_applications,
             scheduled_effects_created=scheduled,
+            scheduled_financial_charges_created=scheduled_charges,
         )
 
     def _select_outcome(
@@ -314,6 +389,94 @@ def _apply_effects_atomically(
         candidate, application = _apply_effect(candidate, context, effect, None)
         applications.append(application)
     return candidate, tuple(applications)
+
+
+def _apply_financial_charges_atomically(
+    state: AgentState,
+    context: WeeklyContext,
+    charges: tuple[FinancialChargeDefinition, ...],
+    source_consequence_id: str,
+) -> tuple[AgentState, tuple[FinancialChargeApplication, ...]]:
+    candidate = state
+    applications: list[FinancialChargeApplication] = []
+    for index, charge in enumerate(charges):
+        candidate, application = _apply_financial_charge(
+            candidate,
+            context,
+            charge,
+            None,
+            index,
+            source_consequence_id,
+        )
+        applications.append(application)
+    return candidate, tuple(applications)
+
+
+def _apply_financial_charge(
+    state: AgentState,
+    context: WeeklyContext,
+    charge: FinancialChargeDefinition,
+    scheduled: ScheduledFinancialCharge | None,
+    index: int,
+    source_consequence_id: str | None = None,
+) -> tuple[AgentState, FinancialChargeApplication]:
+    for condition in charge.conditions:
+        if not condition.evaluate(state, context):
+            return state, FinancialChargeApplication(
+                amount_due=charge.amount,
+                amount_paid=Decimal("0.00"),
+                amount_unpaid=Decimal("0.00"),
+                category=charge.category,
+                shortfall_policy=charge.shortfall_policy,
+                funding_order=charge.funding_order,
+                skipped=True,
+                skip_reason="condition_not_met",
+                scheduled_charge_id=(
+                    scheduled.scheduled_charge_id if scheduled is not None else None
+                ),
+            )
+
+    settlement = settle_liquid_amount(state.financial, charge.amount, charge.funding_order)
+    if charge.shortfall_policy == "require_full" and not settlement.fully_paid:
+        raise ConsequenceApplicationError(
+            "Financial charge requires full payment but available funds were insufficient."
+        )
+    financial = settlement.financial
+    arrear_created = False
+    arrear_obligation_id = ""
+    arrear_balance_after = None
+    if settlement.amount_unpaid > Decimal("0.00"):
+        arrear_created = True
+        source_id = (
+            scheduled.scheduled_charge_id
+            if scheduled is not None
+            else _stable_id("charge", source_consequence_id or "unknown", str(index))
+        )
+        arrear_obligation_id = f"charge:{source_id}"
+        financial = upsert_arrear(
+            financial,
+            obligation_id=arrear_obligation_id,
+            category=charge.category,
+            unpaid=settlement.amount_unpaid,
+            week=context.week,
+        )
+        arrear = find_arrear(financial, arrear_obligation_id)
+        arrear_balance_after = arrear.balance if arrear is not None else settlement.amount_unpaid
+    next_state = replace(state, financial=financial)
+    return next_state, FinancialChargeApplication(
+        amount_due=charge.amount,
+        amount_paid=settlement.amount_paid,
+        amount_unpaid=settlement.amount_unpaid,
+        category=charge.category,
+        shortfall_policy=charge.shortfall_policy,
+        funding_order=charge.funding_order,
+        funding=settlement.transfers,
+        fully_paid=settlement.fully_paid,
+        arrear_created=arrear_created,
+        arrear_obligation_id=arrear_obligation_id,
+        arrear_balance_after=arrear_balance_after,
+        scheduled_charge_id=scheduled.scheduled_charge_id if scheduled is not None else None,
+    )
 
 
 def _apply_effect(

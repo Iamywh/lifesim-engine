@@ -110,6 +110,7 @@ def _parse_option(raw: dict[str, Any]) -> EventOption:
         health_value=raw["health_value"],
         comfort_value=raw["comfort_value"],
         goal_tags=raw.get("goal_tags", []),
+        behavior_tags=raw.get("behavior_tags", []),
     )
 
 
